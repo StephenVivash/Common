@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:Gui.Controls"
+             x:Class="BtHack.MainPage">
+
+    <Grid RowDefinitions="Auto,*">
+        <Grid
+            Padding="10,8"
+            ColumnDefinitions="Auto,*"
+            ColumnSpacing="10">
+            <Label
+                Text="Interface"
+                VerticalOptions="Center" />
+
+            <Picker
+                x:Name="BluetoothInterfacePicker"
+                Grid.Column="1"
+                SelectedIndex="1">
+                <Picker.Items>
+                    <x:String>Muse headset</x:String>
+                    <x:String>WattCycle battery</x:String>
+                </Picker.Items>
+            </Picker>
+        </Grid>
+
+        <controls:LogView
+            x:Name="Log"
+            Grid.Row="1"
+            StartClicked="OnStartClicked"
+            StopClicked="OnStopClicked" />
+    </Grid>
+
+</ContentPage>

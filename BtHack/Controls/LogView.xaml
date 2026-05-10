@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentView xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:controls="clr-namespace:Gui.Controls"
+             x:Name="Root"
+             x:Class="Gui.Controls.LogView">
+    <Border
+        StrokeThickness="1"
+		Padding="0"
+		>
+        <Grid RowDefinitions="Auto,*">
+            <Grid
+                Padding="10,8"
+                ColumnDefinitions="*,Auto,Auto,Auto"
+                ColumnSpacing="8"
+				>
+                <Label
+                    Text="{Binding StatusText, Source={x:Reference Root}}"
+                    FontAttributes="Bold"
+                    FontSize="13"
+                    LineBreakMode="TailTruncation"
+                    VerticalOptions="Center"
+					/>
+
+                <controls:ButtonEx
+                    Grid.Column="1"
+                    Padding="0"
+                    FontSize="14"
+                    Border="False"
+                    Icon="{x:Static controls:FluentIcons.Play}"
+                    SemanticProperties.Description="Start"
+                    IsEnabled="{Binding IsStartEnabled, Source={x:Reference Root}}"
+                    Clicked="OnStartClicked" />
+
+                <controls:ButtonEx
+                    Grid.Column="2"
+                    Padding="0"
+                    FontSize="14"
+                    Border="False"
+                    Icon="{x:Static controls:FluentIcons.Stop}"
+                    SemanticProperties.Description="Stop"
+                    IsEnabled="{Binding IsStopEnabled, Source={x:Reference Root}}"
+                    Clicked="OnStopClicked" />
+
+                <controls:ButtonEx
+                    Grid.Column="3"
+                    Padding="0"
+                    FontSize="14"
+                    Border="False"
+                    Icon="{x:Static controls:FluentIcons.Delete}"
+                    SemanticProperties.Description="Clear"
+                    Clicked="OnClearClicked" />
+            </Grid>
+
+            <CollectionView
+                x:Name="LogEntriesView"
+                Grid.Row="1"
+                ItemsSource="{Binding Entries, Source={x:Reference Root}}"
+                SelectionMode="None">
+                <CollectionView.EmptyView>
+                    <Grid Padding="14">
+                        <Label
+                            Text="No log entries yet."
+							/>
+                    </Grid>
+                </CollectionView.EmptyView>
+                <CollectionView.ItemTemplate>
+                    <DataTemplate>
+                        <Label
+                            Padding="12,4"
+                            FontFamily="Consolas"
+                            FontSize="12"
+                            LineBreakMode="WordWrap"
+                            Text="{Binding .}" />
+                    </DataTemplate>
+                </CollectionView.ItemTemplate>
+            </CollectionView>
+        </Grid>
+    </Border>
+</ContentView>

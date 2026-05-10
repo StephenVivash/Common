@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="BtHack/BtHack.csproj" />
+  <Project Path="Muse/Muse.csproj" />
+  <Project Path="WattCycle/WattCycle.csproj" />
+</Solution>
