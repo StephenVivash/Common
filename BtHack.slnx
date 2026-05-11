@@ -2,4 +2,7 @@
   <Project Path="BtHack/BtHack.csproj" />
   <Project Path="Muse/Muse.csproj" />
   <Project Path="WattCycle/WattCycle.csproj" />
+  <Project Path="WattCycleApp/WattCycleApp.csproj" Id="8bcc9c9a-30f4-4ca3-847b-f4e0cf087b3e">
+    <Deploy Solution="Release|*" />
+  </Project>
 </Solution>
