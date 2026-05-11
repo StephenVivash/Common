@@ -470,7 +470,15 @@ public sealed class MuseBtClient : IAsyncDisposable
 
     public async Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        var scanner = GetBluetoothAdapter()?.BluetoothLeScanner;
+        var adapter = GetBluetoothAdapter();
+        if (adapter is null)
+        {
+            OnInfo("Android Bluetooth adapter is not available.");
+            return null;
+        }
+
+        OnDiagnostic($"Android BLE adapter state={adapter.State}, enabled={adapter.IsEnabled}");
+        var scanner = adapter.BluetoothLeScanner;
         if (scanner is null)
         {
             OnInfo("Android Bluetooth LE scanner is not available.");
@@ -481,16 +489,34 @@ public sealed class MuseBtClient : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(timeout);
 
-        var callback = new MuseScanCallback(discovered =>
+        var callback = new MuseScanCallback(
+            discovered =>
+            {
+                OnDiagnostic($"Found candidate: {discovered.DisplayName}, address=0x{discovered.BluetoothAddress:X}, rssi={discovered.Rssi} dBm, serviceAdvertised={discovered.ServiceAdvertised}");
+                completion.TrySetResult(discovered);
+            },
+            errorCode =>
+            {
+                OnDiagnostic($"Android BLE scan failed: errorCode={errorCode}");
+                completion.TrySetResult(null);
+            },
+            message => OnDiagnostic(message));
+
+        await using var _ = timeoutCts.Token.Register(() =>
         {
-            OnDiagnostic($"Found candidate: {discovered.DisplayName}, address=0x{discovered.BluetoothAddress:X}, rssi={discovered.Rssi} dBm, serviceAdvertised={discovered.ServiceAdvertised}");
-            completion.TrySetResult(discovered);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                OnDiagnostic("Android BLE scan timed out with no Muse advertisement.");
+            }
+
+            completion.TrySetResult(null);
         });
 
-        await using var _ = timeoutCts.Token.Register(() => completion.TrySetResult(null));
-
         OnDiagnostic("Scanning for Muse BLE advertisements...");
-        scanner.StartScan(callback);
+        var settingsBuilder = new ScanSettings.Builder();
+        settingsBuilder.SetScanMode(Android.Bluetooth.LE.ScanMode.LowLatency);
+        var settings = settingsBuilder.Build();
+        scanner.StartScan(new List<ScanFilter>(), settings, callback);
         try
         {
             return await completion.Task;
@@ -905,10 +931,24 @@ public sealed class MuseBtClient : IAsyncDisposable
     private sealed class MuseScanCallback : ScanCallback
     {
         private readonly Action<MuseDeviceAdvertisement> _onDiscovered;
+        private readonly Action<ScanFailure>? _onScanFailed;
+        private readonly Action<string>? _onDiagnostic;
+        private int _resultsSeen;
+        private int _ignoredLogged;
 
-        public MuseScanCallback(Action<MuseDeviceAdvertisement> onDiscovered)
+        public MuseScanCallback(
+            Action<MuseDeviceAdvertisement> onDiscovered,
+            Action<ScanFailure>? onScanFailed,
+            Action<string>? onDiagnostic)
         {
             _onDiscovered = onDiscovered;
+            _onScanFailed = onScanFailed;
+            _onDiagnostic = onDiagnostic;
+        }
+
+        public override void OnScanFailed(ScanFailure errorCode)
+        {
+            _onScanFailed?.Invoke(errorCode);
         }
 
         public override void OnScanResult(ScanCallbackType callbackType, ScanResult? result)
@@ -924,8 +964,19 @@ public sealed class MuseBtClient : IAsyncDisposable
             var name = record?.DeviceName ?? device.Name ?? "";
             var advertisesMuseService = record?.ServiceUuids?.Any(uuid => uuid?.Uuid is not null && FromJavaUuid(uuid.Uuid).Equals(MuseBluetoothConstants.MuseServiceUuid)) == true;
             var looksLikeMuse = advertisesMuseService || name.Contains("Muse", StringComparison.OrdinalIgnoreCase);
+            _resultsSeen++;
             if (!looksLikeMuse)
             {
+                if (_ignoredLogged < 12)
+                {
+                    var serviceUuids = record?.ServiceUuids is null
+                        ? ""
+                        : string.Join(",", record.ServiceUuids.Select(uuid => uuid?.Uuid?.ToString()).Where(uuid => !string.IsNullOrWhiteSpace(uuid)));
+                    var displayName = string.IsNullOrWhiteSpace(name) ? "(no name)" : name;
+                    _onDiagnostic?.Invoke($"Ignored BLE advertisement #{_resultsSeen}: name='{displayName}', address={device.Address}, rssi={result.Rssi} dBm, services=[{serviceUuids}]");
+                    _ignoredLogged++;
+                }
+
                 return;
             }
 
