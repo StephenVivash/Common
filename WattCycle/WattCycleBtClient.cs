@@ -183,6 +183,60 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
 
+    public async Task<WattCycleMosControlResult> SetMosAsync(
+        WattCycleDeviceAdvertisement discovered,
+        bool chargeEnabled,
+        bool dischargeEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ConnectForCommandAsync(discovered, cancellationToken);
+            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
+            var reading = await ReadBatteryAsync(cancellationToken);
+            return new WattCycleMosControlResult(
+                reading,
+                reading.ChargeMosEnabled == chargeEnabled,
+                reading.DischargeMosEnabled == dischargeEnabled);
+        }
+        finally
+        {
+            await CleanupConnectionAsync();
+        }
+    }
+
+    private async Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
+    {
+        _connectionLost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        OnDiagnostic($"Connecting to {discovered.DisplayName} for command...");
+        _device = await BluetoothLEDevice.FromBluetoothAddressAsync(discovered.BluetoothAddress);
+        if (_device is null)
+        {
+            throw new InvalidOperationException("Windows could not create a BluetoothLEDevice for that address.");
+        }
+
+        _device.ConnectionStatusChanged += OnDeviceConnectionStatusChanged;
+        OnDiagnostic($"Device name='{_device.Name}', id='{_device.DeviceId}', status={_device.ConnectionStatus}");
+
+        var protocol = await FindProtocolAsync();
+        if (protocol is null)
+        {
+            throw new InvalidOperationException("BMS service discovery failed: none of the known service layouts matched.");
+        }
+
+        _notify = protocol.NotifyCharacteristic;
+        _write = protocol.WriteCharacteristic;
+        _config = protocol.ConfigCharacteristic;
+        _protocolKind = protocol.Kind;
+        if (_protocolKind == BmsProtocolKind.Tdt)
+        {
+            await UnlockTdtAsync(cancellationToken);
+        }
+
+        await SubscribeAsync(_notify);
+    }
+
     private async Task ConnectAndPollOnceAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
     {
         _connectionLost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -362,6 +416,55 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             }
 
             throw;
+        }
+        finally
+        {
+            if (_pendingCommand?.Register == register)
+            {
+                _pendingCommand = null;
+            }
+        }
+    }
+
+    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
+    {
+        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
+        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
+        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
+    }
+
+    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (_write is null)
+        {
+            throw new InvalidOperationException("Write characteristic is not connected.");
+        }
+
+        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommand = new PendingCommand(register, completion);
+
+        using var writer = new DataWriter();
+        var command = JbdProtocol.BuildWriteCommand(register, payload);
+        writer.WriteBytes(command);
+        var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
+            ? GattWriteOption.WriteWithResponse
+            : GattWriteOption.WriteWithoutResponse;
+        var status = await _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(cancellationToken);
+        OnDiagnostic($"Write register 0x{register:X2} ({option}): {status}, frame={Convert.ToHexString(command)}");
+        if (status != GattCommunicationStatus.Success)
+        {
+            _pendingCommand = null;
+            throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
+        }
+
+        try
+        {
+            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
+            return new JbdFrame(register, 0xff, Array.Empty<byte>());
         }
         finally
         {
@@ -863,6 +966,70 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
 
+    public async Task<WattCycleMosControlResult> SetMosAsync(
+        WattCycleDeviceAdvertisement discovered,
+        bool chargeEnabled,
+        bool dischargeEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ConnectForCommandAsync(discovered, cancellationToken);
+            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
+            var reading = await ReadBatteryAsync(cancellationToken);
+            return new WattCycleMosControlResult(
+                reading,
+                reading.ChargeMosEnabled == chargeEnabled,
+                reading.DischargeMosEnabled == dischargeEnabled);
+        }
+        finally
+        {
+            await CleanupConnectionAsync();
+        }
+    }
+
+    private async Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
+    {
+        var adapter = GetBluetoothAdapter();
+        var device = adapter?.GetRemoteDevice(FormatBluetoothAddress(discovered.BluetoothAddress));
+        if (device is null)
+        {
+            throw new InvalidOperationException("Android could not create a BluetoothDevice for that address.");
+        }
+
+        _gattCallback = new WattCycleGattCallback(HandleCharacteristicChanged, status => ConnectionStatusChanged?.Invoke(this, status));
+        _gatt = device.ConnectGatt(Application.Context, autoConnect: false, _gattCallback, BluetoothTransports.Le);
+        if (_gatt is null)
+        {
+            throw new InvalidOperationException("Android ConnectGatt returned null.");
+        }
+
+        await _gattCallback.WaitForConnectedAsync(cancellationToken);
+        OnDiagnostic($"Connected to {discovered.DisplayName} for command.");
+        var serviceStatus = await _gattCallback.WaitForServicesDiscoveredAsync(cancellationToken);
+        if (serviceStatus != GattStatus.Success)
+        {
+            throw new InvalidOperationException($"JBD/BMS service discovery failed: {serviceStatus}");
+        }
+
+        var protocol = FindProtocol();
+        if (protocol is null)
+        {
+            throw new InvalidOperationException("BMS service discovery failed: none of the known service layouts matched.");
+        }
+
+        _notify = protocol.NotifyCharacteristic;
+        _write = protocol.WriteCharacteristic;
+        _config = protocol.ConfigCharacteristic;
+        _protocolKind = protocol.Kind;
+        if (_protocolKind == BmsProtocolKind.Tdt)
+        {
+            await UnlockTdtAsync(cancellationToken);
+        }
+
+        await SubscribeAsync(_notify, cancellationToken);
+    }
+
     private async Task ConnectAndPollOnceAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
     {
         var adapter = GetBluetoothAdapter();
@@ -1076,6 +1243,66 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             }
 
             throw;
+        }
+        finally
+        {
+            if (_pendingCommand?.Register == register)
+            {
+                _pendingCommand = null;
+            }
+        }
+    }
+
+    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
+    {
+        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
+        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
+        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
+    }
+
+    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (_gatt is null || _write is null || _gattCallback is null)
+        {
+            throw new InvalidOperationException("Write characteristic is not connected.");
+        }
+
+        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommand = new PendingCommand(register, completion);
+        var command = JbdProtocol.BuildWriteCommand(register, payload);
+        _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
+        _write.SetValue(command);
+
+        var writeCompletion = _write.WriteType == GattWriteType.NoResponse ? null : _gattCallback.BeginCharacteristicWrite();
+        if (!_gatt.WriteCharacteristic(_write))
+        {
+            _pendingCommand = null;
+            throw new InvalidOperationException($"Write register 0x{register:X2} failed to start.");
+        }
+
+        if (writeCompletion is not null)
+        {
+            var status = await writeCompletion.WaitAsync(cancellationToken);
+            OnDiagnostic($"Write register 0x{register:X2} ({_write.WriteType}): {status}, frame={Convert.ToHexString(command)}");
+            if (status != GattStatus.Success)
+            {
+                _pendingCommand = null;
+                throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
+            }
+        }
+        else
+        {
+            OnDiagnostic($"Write register 0x{register:X2} ({_write.WriteType}): started, frame={Convert.ToHexString(command)}");
+        }
+
+        try
+        {
+            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
+            return new JbdFrame(register, 0xff, Array.Empty<byte>());
         }
         finally
         {
@@ -1587,6 +1814,20 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         _ = cancellationToken;
         InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows and Android only.");
         return Task.FromResult<IReadOnlyList<WattCycleDeviceAdvertisement>>(Array.Empty<WattCycleDeviceAdvertisement>());
+    }
+
+    public Task<WattCycleMosControlResult> SetMosAsync(
+        WattCycleDeviceAdvertisement discovered,
+        bool chargeEnabled,
+        bool dischargeEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        _ = discovered;
+        _ = chargeEnabled;
+        _ = dischargeEnabled;
+        _ = cancellationToken;
+        InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows and Android only.");
+        return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows and Android only."));
     }
 
     public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)

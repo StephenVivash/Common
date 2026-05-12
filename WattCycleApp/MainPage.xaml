@@ -9,10 +9,10 @@
         <Grid ColumnDefinitions="*,*,*,*"
               ColumnSpacing="8"
               RowDefinitions="Auto,Auto">
-            <Label Text="Batteries" FontSize="12" />
-            <Label Grid.Column="1" Text="Scan" FontSize="12" />
-            <Label Grid.Column="2" Text="Loop" FontSize="12" />
-            <Label Grid.Column="3" Text="Timeout" FontSize="12" />
+            <Label Grid.Column="0" Text="Batteries" HorizontalTextAlignment="Center" FontSize="12" />
+            <Label Grid.Column="1" Text="Scan" HorizontalTextAlignment="Center" FontSize="12" />
+            <Label Grid.Column="2" Text="Loop" HorizontalTextAlignment="Center" FontSize="12" />
+            <Label Grid.Column="3" Text="Timeout" HorizontalTextAlignment="Center" FontSize="12" />
 
             <Entry x:Name="BatteriesEntry"
                    Grid.Row="1"
@@ -48,37 +48,51 @@
                             StrokeThickness="1"
                             Padding="10"
                             Margin="0,0,0,8">
-                        <Grid RowDefinitions="Auto,Auto,Auto,Auto"
+                        <Grid RowDefinitions="Auto,Auto,Auto"
                               ColumnDefinitions="*,Auto"
                               RowSpacing="3">
                             <Label Text="{Binding Name}"
                                    FontAttributes="Bold"
-                                   FontSize="16"
+                                   FontSize="18"
                                    LineBreakMode="TailTruncation" />
                             <Label Grid.Column="1"
                                    Text="{Binding StateOfChargeText}"
+                                   TextColor="{Binding StateOfChargeColor}"
                                    FontAttributes="Bold"
-                                   FontSize="16"
+                                   FontSize="18"
                                    HorizontalTextAlignment="End" />
 
-                            <Label Grid.Row="1"
-                                   Grid.ColumnSpan="2"
-                                   Text="{Binding PowerText}"
-                                   FontSize="15" />
+                            <Grid Grid.Row="1"
+                                  Grid.ColumnSpan="2"
+                                  ColumnDefinitions="*,*,*,*,*"
+                                  ColumnSpacing="1">
+                                <Label Text="{Binding VoltageText}"
+                                       TextColor="{Binding VoltageColor}"
+                                       FontSize="14" />
+                                <Label Grid.Column="1"
+                                       Text="{Binding CurrentText}"
+                                       TextColor="{Binding CurrentColor}"
+                                       FontSize="14" />
+                                <Label Grid.Column="2"
+                                       Text="{Binding PowerText}"
+                                       TextColor="{Binding PowerColor}"
+                                       FontSize="14" />
+                                <Label Grid.Column="3"
+                                       Text="Cha"
+                                       TextColor="{Binding ChargeTextColor}"
+                                       FontSize="14"
+                                       HorizontalTextAlignment="Center" />
+                                <Label Grid.Column="4"
+                                       Text="Dis"
+                                       TextColor="{Binding DischargeTextColor}"
+                                       FontSize="14"
+                                       HorizontalTextAlignment="Center" />
+                            </Grid>
 
-                            <HorizontalStackLayout Grid.Row="2"
-                                                   Grid.ColumnSpan="2"
-                                                   Spacing="8">
-                                <CheckBox IsChecked="{Binding ChargeMosEnabled}" IsEnabled="False" />
-                                <Label Text="Cha" VerticalTextAlignment="Center" />
-                                <CheckBox IsChecked="{Binding DischargeMosEnabled}" IsEnabled="False" />
-                                <Label Text="Dis" VerticalTextAlignment="Center" />
-                            </HorizontalStackLayout>
-
-                            <Label Grid.Row="3"
+                            <Label Grid.Row="2"
                                    Grid.ColumnSpan="2"
                                    Text="{Binding Status}"
-                                   FontSize="12"
+                                   FontSize="14"
                                    TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
                                    LineBreakMode="TailTruncation" />
                         </Grid>

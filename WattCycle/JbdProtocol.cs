@@ -4,17 +4,39 @@ namespace WattCycle.Core;
 
 internal static class JbdProtocol
 {
+    private const byte ReadCommand = 0xa5;
+    private const byte WriteCommand = 0x5a;
+
     public static byte[] BuildReadCommand(byte register)
     {
         Span<byte> frame = stackalloc byte[7];
         frame[0] = 0xdd;
-        frame[1] = 0xa5;
+        frame[1] = ReadCommand;
         frame[2] = register;
         frame[3] = 0x00;
         var checksum = CalculateChecksum(frame[2..4]);
         BinaryPrimitives.WriteUInt16BigEndian(frame[4..6], checksum);
         frame[6] = 0x77;
         return frame.ToArray();
+    }
+
+    public static byte[] BuildWriteCommand(byte register, ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length > byte.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(payload), "JBD write payload is too large.");
+        }
+
+        var frame = new byte[payload.Length + 7];
+        frame[0] = 0xdd;
+        frame[1] = WriteCommand;
+        frame[2] = register;
+        frame[3] = (byte)payload.Length;
+        payload.CopyTo(frame.AsSpan(4));
+        var checksum = CalculateChecksum(frame.AsSpan(2, payload.Length + 2));
+        BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(4 + payload.Length, 2), checksum);
+        frame[^1] = 0x77;
+        return frame;
     }
 
     public static bool TryParseFrame(ReadOnlySpan<byte> frame, out JbdFrame parsed)

@@ -21,3 +21,11 @@ public sealed record WattCycleBatteryReading(
 {
     public double PowerWatts => PackVoltage * Current;
 }
+
+public sealed record WattCycleMosControlResult(
+    WattCycleBatteryReading Reading,
+    bool ChargeMatches,
+    bool DischargeMatches)
+{
+    public bool Matches => ChargeMatches && DischargeMatches;
+}

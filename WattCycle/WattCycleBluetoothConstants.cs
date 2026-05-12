@@ -27,6 +27,7 @@ public static class WattCycleBluetoothConstants
 
     public const byte BasicInfoRegister = 0x03;
     public const byte CellVoltagesRegister = 0x04;
+    public const byte MosControlRegister = 0xe1;
 
     public static Guid BleUuid(int shortId) => Guid.Parse($"0000{shortId:x4}-0000-1000-8000-00805f9b34fb");
 }

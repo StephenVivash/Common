@@ -10,6 +10,9 @@ public partial class MainPage : ContentPage
     private const string BatteryCountPreferenceKey = "battery-count";
     private const string RememberedBatteriesPreferenceKey = "remembered-batteries";
     private static readonly TimeSpan BatteryGap = TimeSpan.FromSeconds(10);
+    private static readonly Color NeutralStateColor = Colors.Gray;
+    private static readonly Color LowStateColor = GetResourceColor("Low", Colors.Green);
+    private static readonly Color HighStateColor = GetResourceColor("High", Colors.Red);
     private CancellationTokenSource? _loopCts;
     private int _knownBatteryCount;
 
@@ -64,23 +67,36 @@ public partial class MainPage : ContentPage
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)
     {
+        var nextCycleStart = DateTimeOffset.Now;
         while (!cancellationToken.IsCancellationRequested)
         {
+            var delayUntilCycle = nextCycleStart - DateTimeOffset.Now;
+            if (delayUntilCycle > TimeSpan.Zero)
+            {
+                await Task.Delay(delayUntilCycle, cancellationToken);
+            }
+
+            var cycleStarted = DateTimeOffset.Now;
             var settings = ReadSettings();
             EnsureRememberedBatteryCount(settings.BatteryLimit);
+            nextCycleStart = cycleStarted + settings.LoopDelay;
 
-            IReadOnlyList<WattCycleDeviceAdvertisement> advertisements;
-            await using (var scanner = new WattCycleBtClient())
+            var advertisements = GetRememberedAdvertisements(settings.BatteryLimit);
+            if (advertisements.Count < settings.BatteryLimit)
             {
-                advertisements = await scanner.FindBatteriesAsync(
+                await using var scanner = new WattCycleBtClient();
+                var scannedAdvertisements = await scanner.FindBatteriesAsync(
                     settings.BatteryLimit,
                     settings.ScanTimeout,
                     advertisement => MainThread.BeginInvokeOnMainThread(() =>
                     {
                         GetOrAddRow(advertisement);
+                        SortBatteryRows();
                         SaveRememberedRows();
                     }),
                     cancellationToken);
+
+                advertisements = MergeAdvertisements(advertisements, scannedAdvertisements, settings.BatteryLimit);
             }
 
             await EnsureRowsAsync(advertisements);
@@ -97,8 +113,6 @@ public partial class MainPage : ContentPage
                     await Task.Delay(BatteryGap, cancellationToken);
                 }
             }
-
-            await Task.Delay(settings.LoopDelay, cancellationToken);
         }
     }
 
@@ -160,9 +174,17 @@ public partial class MainPage : ContentPage
     private static void UpdateRow(BatteryRow row, WattCycleBatteryReading reading)
     {
         row.StateOfChargeText = $"{reading.StateOfChargePercent}%";
-        row.PowerText = $"{reading.PackVoltage:0.0}V {reading.Current:0.0}A {reading.PowerWatts:0.0}W";
+        row.StateOfChargeColor = reading.StateOfChargePercent < 25 ? HighStateColor : LowStateColor;
+        row.VoltageText = $"{reading.PackVoltage:0.0}V";
+        row.VoltageColor = reading.PackVoltage < 13 ? HighStateColor : LowStateColor;
+        row.CurrentText = $"{reading.Current:0.0}A";
+        row.CurrentColor = reading.Current >= 0 ? LowStateColor : HighStateColor;
+        row.PowerText = $"{reading.PowerWatts:0.0}W";
+        row.PowerColor = reading.PowerWatts >= 0 ? LowStateColor : HighStateColor;
         row.ChargeMosEnabled = reading.ChargeMosEnabled;
         row.DischargeMosEnabled = reading.DischargeMosEnabled;
+        row.ChargeTextColor = reading.ChargeMosEnabled ? LowStateColor : HighStateColor;
+        row.DischargeTextColor = reading.DischargeMosEnabled ? LowStateColor : HighStateColor;
     }
 
     private Task EnsureRowsAsync(IReadOnlyList<WattCycleDeviceAdvertisement> advertisements)
@@ -173,7 +195,33 @@ public partial class MainPage : ContentPage
             {
                 GetOrAddRow(advertisement);
             }
+
+            SortBatteryRows();
         });
+    }
+
+    private IReadOnlyList<WattCycleDeviceAdvertisement> GetRememberedAdvertisements(int batteryLimit) =>
+        Batteries
+            .Where(row => row.BluetoothAddress != 0 && !string.IsNullOrWhiteSpace(row.Name))
+            .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.BluetoothAddress)
+            .Take(batteryLimit)
+            .Select(row => new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false))
+            .ToArray();
+
+    private static IReadOnlyList<WattCycleDeviceAdvertisement> MergeAdvertisements(
+        IReadOnlyList<WattCycleDeviceAdvertisement> remembered,
+        IReadOnlyList<WattCycleDeviceAdvertisement> scanned,
+        int batteryLimit)
+    {
+        return remembered
+            .Concat(scanned)
+            .GroupBy(advertisement => advertisement.BluetoothAddress != 0 ? advertisement.BluetoothAddress.ToString("X") : advertisement.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .OrderBy(advertisement => advertisement.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(advertisement => advertisement.BluetoothAddress)
+            .Take(batteryLimit)
+            .ToArray();
     }
 
     private Task<BatteryRow> GetOrAddRowAsync(WattCycleDeviceAdvertisement advertisement)
@@ -224,12 +272,16 @@ public partial class MainPage : ContentPage
                 Batteries.Add(new BatteryRow(address, name));
             }
         }
+
+        SortBatteryRows();
     }
 
     private void SaveRememberedRows()
     {
         var remembered = Batteries
             .Where(row => !string.IsNullOrWhiteSpace(row.Name))
+            .OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.BluetoothAddress)
             .Take(ReadInt(BatteriesEntry, 4, 1, 16))
             .Select(row => $"{row.BluetoothAddress}|{row.Name}");
         Preferences.Set(RememberedBatteriesPreferenceKey, string.Join('\n', remembered));
@@ -259,6 +311,26 @@ public partial class MainPage : ContentPage
     {
         var newCount = ReadInt(BatteriesEntry, 4, 1, 16);
         EnsureRememberedBatteryCount(newCount);
+    }
+
+    private void SortBatteryRows()
+    {
+        var sorted = Batteries
+            .Select((row, index) => new { Row = row, Index = index })
+            .OrderBy(item => item.Row.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Row.BluetoothAddress)
+            .Select(item => item.Row)
+            .ToArray();
+
+        for (var targetIndex = 0; targetIndex < sorted.Length; targetIndex++)
+        {
+            var row = sorted[targetIndex];
+            var currentIndex = Batteries.IndexOf(row);
+            if (currentIndex >= 0 && currentIndex != targetIndex)
+            {
+                Batteries.Move(currentIndex, targetIndex);
+            }
+        }
     }
 
     private async Task<bool> EnsureBluetoothPermissionsAsync()
@@ -299,6 +371,16 @@ public partial class MainPage : ContentPage
         return Math.Clamp(value, min, max);
     }
 
+    private static Color GetResourceColor(string key, Color fallback)
+    {
+        if (Application.Current?.Resources.TryGetValue(key, out var value) == true && value is Color color)
+        {
+            return color;
+        }
+
+        return fallback;
+    }
+
     private sealed record MonitorSettings(int BatteryLimit, TimeSpan ScanTimeout, TimeSpan LoopDelay, TimeSpan DataTimeout);
 
     public sealed class BatteryRow : INotifyPropertyChanged
@@ -306,9 +388,17 @@ public partial class MainPage : ContentPage
         private ulong _bluetoothAddress;
         private string _name;
         private string _stateOfChargeText = "--%";
-        private string _powerText = "--.-V --.-A --.-W";
+        private Color _stateOfChargeColor = NeutralStateColor;
+        private string _voltageText = "--.-V";
+        private Color _voltageColor = NeutralStateColor;
+        private string _currentText = "--.-A";
+        private Color _currentColor = NeutralStateColor;
+        private string _powerText = "--.-W";
+        private Color _powerColor = NeutralStateColor;
         private bool _chargeMosEnabled;
         private bool _dischargeMosEnabled;
+        private Color _chargeTextColor = NeutralStateColor;
+        private Color _dischargeTextColor = NeutralStateColor;
         private string _status = "Waiting";
 
         public BatteryRow(WattCycleDeviceAdvertisement advertisement)
@@ -343,10 +433,46 @@ public partial class MainPage : ContentPage
             set => SetField(ref _stateOfChargeText, value);
         }
 
+        public Color StateOfChargeColor
+        {
+            get => _stateOfChargeColor;
+            set => SetField(ref _stateOfChargeColor, value);
+        }
+
+        public string VoltageText
+        {
+            get => _voltageText;
+            set => SetField(ref _voltageText, value);
+        }
+
+        public Color VoltageColor
+        {
+            get => _voltageColor;
+            set => SetField(ref _voltageColor, value);
+        }
+
+        public string CurrentText
+        {
+            get => _currentText;
+            set => SetField(ref _currentText, value);
+        }
+
+        public Color CurrentColor
+        {
+            get => _currentColor;
+            set => SetField(ref _currentColor, value);
+        }
+
         public string PowerText
         {
             get => _powerText;
             set => SetField(ref _powerText, value);
+        }
+
+        public Color PowerColor
+        {
+            get => _powerColor;
+            set => SetField(ref _powerColor, value);
         }
 
         public bool ChargeMosEnabled
@@ -359,6 +485,18 @@ public partial class MainPage : ContentPage
         {
             get => _dischargeMosEnabled;
             set => SetField(ref _dischargeMosEnabled, value);
+        }
+
+        public Color ChargeTextColor
+        {
+            get => _chargeTextColor;
+            set => SetField(ref _chargeTextColor, value);
+        }
+
+        public Color DischargeTextColor
+        {
+            get => _dischargeTextColor;
+            set => SetField(ref _dischargeTextColor, value);
         }
 
         public string Status
