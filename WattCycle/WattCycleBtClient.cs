@@ -29,8 +29,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
     public async Task<WattCycleDeviceAdvertisement?> FindBatteryAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         var completion = new TaskCompletionSource<WattCycleDeviceAdvertisement?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
+        using var timeoutCts = new CancellationTokenSource(timeout);
 
         var watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
         watcher.Received += (_, args) =>
@@ -57,7 +56,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             }
         };
 
-        await using var _ = timeoutCts.Token.Register(() => completion.TrySetResult(SelectFallbackScanCandidate()));
+        await using var timeoutRegistration = timeoutCts.Token.Register(() => completion.TrySetResult(SelectFallbackScanCandidate()));
+        await using var cancellationRegistration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
         _scanCandidates.Clear();
         OnDiagnostic("Scanning for WattCycle battery BLE advertisements...");
         watcher.Start();
@@ -67,7 +67,81 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
         finally
         {
-            watcher.Stop();
+            try
+            {
+                watcher.Stop();
+            }
+            catch (InvalidOperationException ex)
+            {
+                OnDiagnostic($"Stopping WattCycle BLE scanner failed: {ex.Message}");
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<WattCycleDeviceAdvertisement>> FindBatteriesAsync(
+        int maxBatteries,
+        TimeSpan timeout,
+        Action<WattCycleDeviceAdvertisement>? batteryDiscovered = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (maxBatteries <= 0)
+        {
+            return Array.Empty<WattCycleDeviceAdvertisement>();
+        }
+
+        var discovered = new ConcurrentDictionary<ulong, WattCycleDeviceAdvertisement>();
+        var completion = new TaskCompletionSource<IReadOnlyList<WattCycleDeviceAdvertisement>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+
+        var watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
+        watcher.Received += (_, args) =>
+        {
+            var name = args.Advertisement.LocalName;
+            var advertisesBmsService = args.Advertisement.ServiceUuids.Any(uuid => uuid == WattCycleBluetoothConstants.JbdServiceUuid);
+            if (!advertisesBmsService && !LooksLikeBatteryName(name))
+            {
+                return;
+            }
+
+            var advertisement = new WattCycleDeviceAdvertisement(args.BluetoothAddress, name, args.RawSignalStrengthInDBm, advertisesBmsService);
+            if (discovered.TryAdd(args.BluetoothAddress, advertisement))
+            {
+                OnDiagnostic($"Found battery {discovered.Count}/{maxBatteries}: {advertisement.DisplayName}, address=0x{advertisement.BluetoothAddress:X}, rssi={advertisement.Rssi} dBm, serviceAdvertised={advertisement.ServiceAdvertised}");
+                batteryDiscovered?.Invoke(advertisement);
+            }
+
+            if (discovered.Count >= maxBatteries)
+            {
+                completion.TrySetResult(OrderDiscoveredBatteries(discovered.Values, maxBatteries));
+            }
+        };
+        watcher.Stopped += (_, args) =>
+        {
+            OnDiagnostic($"Scanner stopped: {args.Error}");
+            if (args.Error != BluetoothError.Success)
+            {
+                completion.TrySetResult(OrderDiscoveredBatteries(discovered.Values, maxBatteries));
+            }
+        };
+
+        await using var timeoutRegistration = timeoutCts.Token.Register(() => completion.TrySetResult(OrderDiscoveredBatteries(discovered.Values, maxBatteries)));
+        await using var cancellationRegistration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        OnDiagnostic($"Scanning for up to {maxBatteries} WattCycle batteries...");
+        watcher.Start();
+        try
+        {
+            return await completion.Task;
+        }
+        finally
+        {
+            try
+            {
+                watcher.Stop();
+            }
+            catch (InvalidOperationException ex)
+            {
+                OnDiagnostic($"Stopping WattCycle BLE scanner failed: {ex.Message}");
+            }
         }
     }
 
@@ -98,6 +172,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
                 await CleanupConnectionAsync();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             reconnectAttempt++;
             var delay = GetReconnectDelay(reconnectAttempt);
             ConnectionStatusChanged?.Invoke(this, "Reconnecting");
@@ -107,6 +182,60 @@ public sealed class WattCycleBtClient : IAsyncDisposable
     }
 
     public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
+
+    public async Task<WattCycleMosControlResult> SetMosAsync(
+        WattCycleDeviceAdvertisement discovered,
+        bool chargeEnabled,
+        bool dischargeEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ConnectForCommandAsync(discovered, cancellationToken);
+            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
+            var reading = await ReadBatteryAsync(cancellationToken);
+            return new WattCycleMosControlResult(
+                reading,
+                reading.ChargeMosEnabled == chargeEnabled,
+                reading.DischargeMosEnabled == dischargeEnabled);
+        }
+        finally
+        {
+            await CleanupConnectionAsync();
+        }
+    }
+
+    private async Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
+    {
+        _connectionLost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        OnDiagnostic($"Connecting to {discovered.DisplayName} for command...");
+        _device = await BluetoothLEDevice.FromBluetoothAddressAsync(discovered.BluetoothAddress);
+        if (_device is null)
+        {
+            throw new InvalidOperationException("Windows could not create a BluetoothLEDevice for that address.");
+        }
+
+        _device.ConnectionStatusChanged += OnDeviceConnectionStatusChanged;
+        OnDiagnostic($"Device name='{_device.Name}', id='{_device.DeviceId}', status={_device.ConnectionStatus}");
+
+        var protocol = await FindProtocolAsync();
+        if (protocol is null)
+        {
+            throw new InvalidOperationException("BMS service discovery failed: none of the known service layouts matched.");
+        }
+
+        _notify = protocol.NotifyCharacteristic;
+        _write = protocol.WriteCharacteristic;
+        _config = protocol.ConfigCharacteristic;
+        _protocolKind = protocol.Kind;
+        if (_protocolKind == BmsProtocolKind.Tdt)
+        {
+            await UnlockTdtAsync(cancellationToken);
+        }
+
+        await SubscribeAsync(_notify);
+    }
 
     private async Task ConnectAndPollOnceAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
     {
@@ -287,6 +416,55 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             }
 
             throw;
+        }
+        finally
+        {
+            if (_pendingCommand?.Register == register)
+            {
+                _pendingCommand = null;
+            }
+        }
+    }
+
+    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
+    {
+        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
+        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
+        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
+    }
+
+    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (_write is null)
+        {
+            throw new InvalidOperationException("Write characteristic is not connected.");
+        }
+
+        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommand = new PendingCommand(register, completion);
+
+        using var writer = new DataWriter();
+        var command = JbdProtocol.BuildWriteCommand(register, payload);
+        writer.WriteBytes(command);
+        var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
+            ? GattWriteOption.WriteWithResponse
+            : GattWriteOption.WriteWithoutResponse;
+        var status = await _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(cancellationToken);
+        OnDiagnostic($"Write register 0x{register:X2} ({option}): {status}, frame={Convert.ToHexString(command)}");
+        if (status != GattCommunicationStatus.Success)
+        {
+            _pendingCommand = null;
+            throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
+        }
+
+        try
+        {
+            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
+            return new JbdFrame(register, 0xff, Array.Empty<byte>());
         }
         finally
         {
@@ -507,7 +685,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     private static bool LooksLikeBatteryName(string? name) =>
         !string.IsNullOrWhiteSpace(name) &&
-        (name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
+        (name.StartsWith("XDZN_001", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("Cycle", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("BMS", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("Battery", StringComparison.OrdinalIgnoreCase) ||
@@ -539,12 +718,24 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             OnDiagnostic($"  {displayName}, address=0x{candidate.BluetoothAddress:X}, rssi={candidate.Rssi} dBm, serviceAdvertised={candidate.ServiceAdvertised}");
         }
 
-        var fallback = candidates.FirstOrDefault(candidate => LooksLikeBatteryName(candidate.Name)) ??
-            candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.Name)) ??
-            candidates[0];
+        var fallback = candidates.FirstOrDefault(candidate => candidate.ServiceAdvertised || LooksLikeBatteryName(candidate.Name));
+        if (fallback is null)
+        {
+            OnDiagnostic("No fallback selected because none of the nearby advertisements matched a WattCycle/JBD battery name or service.");
+            return null;
+        }
+
         OnDiagnostic($"Trying fallback BLE device '{fallback.ToAdvertisement().DisplayName}' so service discovery can verify whether it is the battery.");
         return fallback.ToAdvertisement();
     }
+
+    private static IReadOnlyList<WattCycleDeviceAdvertisement> OrderDiscoveredBatteries(IEnumerable<WattCycleDeviceAdvertisement> advertisements, int maxBatteries) =>
+        advertisements
+            .OrderByDescending(advertisement => advertisement.ServiceAdvertised)
+            .ThenBy(advertisement => advertisement.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(advertisement => advertisement.Rssi)
+            .Take(maxBatteries)
+            .ToArray();
 
     private static TimeSpan GetReconnectDelay(int attempt)
     {
@@ -617,9 +808,9 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
 
         var completion = new TaskCompletionSource<WattCycleDeviceAdvertisement?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
-        await using var _ = timeoutCts.Token.Register(() => completion.TrySetResult(SelectFallbackScanCandidate()));
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        await using var timeoutRegistration = timeoutCts.Token.Register(() => completion.TrySetResult(SelectFallbackScanCandidate()));
+        await using var cancellationRegistration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
 
         var callback = new WattCycleScanCallback(discovered =>
         {
@@ -633,14 +824,106 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
         _scanCandidates.Clear();
         OnDiagnostic("Scanning for WattCycle battery BLE advertisements...");
-        scanner.StartScan(callback);
+        try
+        {
+            scanner.StartScan(callback);
+        }
+        catch (Exception ex)
+        {
+            callback.Dispose();
+            OnInfo($"Android BLE scan could not start: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+            return null;
+        }
+
         try
         {
             return await completion.Task;
         }
         finally
         {
-            scanner.StopScan(callback);
+            try
+            {
+                scanner.StopScan(callback);
+            }
+            catch (Exception ex)
+            {
+                OnDiagnostic($"Stopping Android WattCycle BLE scanner failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+            }
+
+            callback.Dispose();
+        }
+    }
+
+    public async Task<IReadOnlyList<WattCycleDeviceAdvertisement>> FindBatteriesAsync(
+        int maxBatteries,
+        TimeSpan timeout,
+        Action<WattCycleDeviceAdvertisement>? batteryDiscovered = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (maxBatteries <= 0)
+        {
+            return Array.Empty<WattCycleDeviceAdvertisement>();
+        }
+
+        var scanner = GetBluetoothAdapter()?.BluetoothLeScanner;
+        if (scanner is null)
+        {
+            OnInfo("Android Bluetooth LE scanner is not available.");
+            return Array.Empty<WattCycleDeviceAdvertisement>();
+        }
+
+        var discovered = new ConcurrentDictionary<ulong, WattCycleDeviceAdvertisement>();
+        var completion = new TaskCompletionSource<IReadOnlyList<WattCycleDeviceAdvertisement>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        await using var timeoutRegistration = timeoutCts.Token.Register(() => completion.TrySetResult(OrderDiscoveredBatteries(discovered.Values, maxBatteries)));
+        await using var cancellationRegistration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+
+        var callback = new WattCycleScanCallback(advertisement =>
+        {
+            if (!advertisement.ServiceAdvertised && !LooksLikeBatteryName(advertisement.Name))
+            {
+                return;
+            }
+
+            if (discovered.TryAdd(advertisement.BluetoothAddress, advertisement))
+            {
+                OnDiagnostic($"Found battery {discovered.Count}/{maxBatteries}: {advertisement.DisplayName}, address=0x{advertisement.BluetoothAddress:X}, rssi={advertisement.Rssi} dBm, serviceAdvertised={advertisement.ServiceAdvertised}");
+                batteryDiscovered?.Invoke(advertisement);
+            }
+
+            if (discovered.Count >= maxBatteries)
+            {
+                completion.TrySetResult(OrderDiscoveredBatteries(discovered.Values, maxBatteries));
+            }
+        });
+
+        OnDiagnostic($"Scanning for up to {maxBatteries} WattCycle batteries...");
+        try
+        {
+            scanner.StartScan(callback);
+        }
+        catch (Exception ex)
+        {
+            callback.Dispose();
+            OnInfo($"Android BLE scan could not start: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+            return Array.Empty<WattCycleDeviceAdvertisement>();
+        }
+
+        try
+        {
+            return await completion.Task;
+        }
+        finally
+        {
+            try
+            {
+                scanner.StopScan(callback);
+            }
+            catch (Exception ex)
+            {
+                OnDiagnostic($"Stopping Android WattCycle BLE scanner failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+            }
+
             callback.Dispose();
         }
     }
@@ -672,6 +955,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
                 await CleanupConnectionAsync();
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             reconnectAttempt++;
             var delay = GetReconnectDelay(reconnectAttempt);
             ConnectionStatusChanged?.Invoke(this, "Reconnecting");
@@ -681,6 +965,70 @@ public sealed class WattCycleBtClient : IAsyncDisposable
     }
 
     public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
+
+    public async Task<WattCycleMosControlResult> SetMosAsync(
+        WattCycleDeviceAdvertisement discovered,
+        bool chargeEnabled,
+        bool dischargeEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ConnectForCommandAsync(discovered, cancellationToken);
+            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
+            var reading = await ReadBatteryAsync(cancellationToken);
+            return new WattCycleMosControlResult(
+                reading,
+                reading.ChargeMosEnabled == chargeEnabled,
+                reading.DischargeMosEnabled == dischargeEnabled);
+        }
+        finally
+        {
+            await CleanupConnectionAsync();
+        }
+    }
+
+    private async Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
+    {
+        var adapter = GetBluetoothAdapter();
+        var device = adapter?.GetRemoteDevice(FormatBluetoothAddress(discovered.BluetoothAddress));
+        if (device is null)
+        {
+            throw new InvalidOperationException("Android could not create a BluetoothDevice for that address.");
+        }
+
+        _gattCallback = new WattCycleGattCallback(HandleCharacteristicChanged, status => ConnectionStatusChanged?.Invoke(this, status));
+        _gatt = device.ConnectGatt(Application.Context, autoConnect: false, _gattCallback, BluetoothTransports.Le);
+        if (_gatt is null)
+        {
+            throw new InvalidOperationException("Android ConnectGatt returned null.");
+        }
+
+        await _gattCallback.WaitForConnectedAsync(cancellationToken);
+        OnDiagnostic($"Connected to {discovered.DisplayName} for command.");
+        var serviceStatus = await _gattCallback.WaitForServicesDiscoveredAsync(cancellationToken);
+        if (serviceStatus != GattStatus.Success)
+        {
+            throw new InvalidOperationException($"JBD/BMS service discovery failed: {serviceStatus}");
+        }
+
+        var protocol = FindProtocol();
+        if (protocol is null)
+        {
+            throw new InvalidOperationException("BMS service discovery failed: none of the known service layouts matched.");
+        }
+
+        _notify = protocol.NotifyCharacteristic;
+        _write = protocol.WriteCharacteristic;
+        _config = protocol.ConfigCharacteristic;
+        _protocolKind = protocol.Kind;
+        if (_protocolKind == BmsProtocolKind.Tdt)
+        {
+            await UnlockTdtAsync(cancellationToken);
+        }
+
+        await SubscribeAsync(_notify, cancellationToken);
+    }
 
     private async Task ConnectAndPollOnceAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
     {
@@ -895,6 +1243,66 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             }
 
             throw;
+        }
+        finally
+        {
+            if (_pendingCommand?.Register == register)
+            {
+                _pendingCommand = null;
+            }
+        }
+    }
+
+    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
+    {
+        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
+        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
+        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
+    }
+
+    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
+    {
+        if (_gatt is null || _write is null || _gattCallback is null)
+        {
+            throw new InvalidOperationException("Write characteristic is not connected.");
+        }
+
+        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCommand = new PendingCommand(register, completion);
+        var command = JbdProtocol.BuildWriteCommand(register, payload);
+        _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
+        _write.SetValue(command);
+
+        var writeCompletion = _write.WriteType == GattWriteType.NoResponse ? null : _gattCallback.BeginCharacteristicWrite();
+        if (!_gatt.WriteCharacteristic(_write))
+        {
+            _pendingCommand = null;
+            throw new InvalidOperationException($"Write register 0x{register:X2} failed to start.");
+        }
+
+        if (writeCompletion is not null)
+        {
+            var status = await writeCompletion.WaitAsync(cancellationToken);
+            OnDiagnostic($"Write register 0x{register:X2} ({_write.WriteType}): {status}, frame={Convert.ToHexString(command)}");
+            if (status != GattStatus.Success)
+            {
+                _pendingCommand = null;
+                throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
+            }
+        }
+        else
+        {
+            OnDiagnostic($"Write register 0x{register:X2} ({_write.WriteType}): started, frame={Convert.ToHexString(command)}");
+        }
+
+        try
+        {
+            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
+            return new JbdFrame(register, 0xff, Array.Empty<byte>());
         }
         finally
         {
@@ -1145,7 +1553,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     private static bool LooksLikeBatteryName(string? name) =>
         !string.IsNullOrWhiteSpace(name) &&
-        (name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
+        (name.StartsWith("XDZN_001", StringComparison.OrdinalIgnoreCase) ||
+         name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("Cycle", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("BMS", StringComparison.OrdinalIgnoreCase) ||
          name.Contains("Battery", StringComparison.OrdinalIgnoreCase) ||
@@ -1177,12 +1586,24 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             OnDiagnostic($"  {displayName}, address=0x{candidate.BluetoothAddress:X}, rssi={candidate.Rssi} dBm, serviceAdvertised={candidate.ServiceAdvertised}");
         }
 
-        var fallback = candidates.FirstOrDefault(candidate => LooksLikeBatteryName(candidate.Name)) ??
-            candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate.Name)) ??
-            candidates[0];
+        var fallback = candidates.FirstOrDefault(candidate => candidate.ServiceAdvertised || LooksLikeBatteryName(candidate.Name));
+        if (fallback is null)
+        {
+            OnDiagnostic("No fallback selected because none of the nearby advertisements matched a WattCycle/JBD battery name or service.");
+            return null;
+        }
+
         OnDiagnostic($"Trying fallback BLE device '{fallback.ToAdvertisement().DisplayName}' so service discovery can verify whether it is the battery.");
         return fallback.ToAdvertisement();
     }
+
+    private static IReadOnlyList<WattCycleDeviceAdvertisement> OrderDiscoveredBatteries(IEnumerable<WattCycleDeviceAdvertisement> advertisements, int maxBatteries) =>
+        advertisements
+            .OrderByDescending(advertisement => advertisement.ServiceAdvertised)
+            .ThenBy(advertisement => advertisement.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(advertisement => advertisement.Rssi)
+            .Take(maxBatteries)
+            .ToArray();
 
     private static UUID ToJavaUuid(Guid guid) => UUID.FromString(guid.ToString())!;
 
@@ -1368,28 +1789,56 @@ namespace WattCycle.Core;
 #pragma warning disable CS0067
 public sealed class WattCycleBtClient : IAsyncDisposable
 {
-    public event EventHandler<string>? DiagnosticMessage;
-    public event EventHandler<string>? InfoMessage;
-    public event EventHandler<string>? ConnectionStatusChanged;
-    public event EventHandler<WattCycleBatteryReading>? BatteryReadingReceived;
+	public event EventHandler<string>? DiagnosticMessage;
+	public event EventHandler<string>? InfoMessage;
+	public event EventHandler<string>? ConnectionStatusChanged;
+	public event EventHandler<WattCycleBatteryReading>? BatteryReadingReceived;
 
-    public Task<WattCycleDeviceAdvertisement?> FindBatteryAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
-    {
-        _ = timeout;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows and Android only.");
-        return Task.FromResult<WattCycleDeviceAdvertisement?>(null);
-    }
+	public Task<WattCycleDeviceAdvertisement?> FindBatteryAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+	{
+		_ = timeout;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows and Android only.");
+		return Task.FromResult<WattCycleDeviceAdvertisement?>(null);
+	}
 
-    public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        _ = discovered;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows and Android only.");
-        return Task.CompletedTask;
-    }
+	public Task<IReadOnlyList<WattCycleDeviceAdvertisement>> FindBatteriesAsync(
+		int maxBatteries,
+		TimeSpan timeout,
+		Action<WattCycleDeviceAdvertisement>? batteryDiscovered = null,
+		CancellationToken cancellationToken = default)
+	{
+		_ = maxBatteries;
+		_ = timeout;
+		_ = batteryDiscovered;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows and Android only.");
+		return Task.FromResult<IReadOnlyList<WattCycleDeviceAdvertisement>>(Array.Empty<WattCycleDeviceAdvertisement>());
+	}
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+	public Task<WattCycleMosControlResult> SetMosAsync(
+		WattCycleDeviceAdvertisement discovered,
+		bool chargeEnabled,
+		bool dischargeEnabled,
+		CancellationToken cancellationToken = default)
+	{
+		_ = discovered;
+		_ = chargeEnabled;
+		_ = dischargeEnabled;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows and Android only.");
+		return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows and Android only."));
+	}
+
+	public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
+	{
+		_ = discovered;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows and Android only.");
+		return Task.CompletedTask;
+	}
+
+	public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 #pragma warning restore CS0067
 #endif

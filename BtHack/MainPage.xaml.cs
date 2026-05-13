@@ -10,13 +10,15 @@ public partial class MainPage : ContentPage
 	private MuseBtClient? _museClient;
 	private WattCycleBtClient? _wattCycleClient;
 	private CancellationTokenSource? _streamingCts;
+	private WattCycleDeviceAdvertisement? _lastWattCycleAdvertisement;
+	private TaskCompletionSource? _runStopped;
 	private bool _bandHeaderPrinted;
 
 	public MainPage()
 	{
 		InitializeComponent();
 		BluetoothInterfacePicker.SelectedIndex = 1;
-        }
+	}
 
 	private async void OnStartClicked(object? sender, EventArgs e)
 	{
@@ -27,6 +29,7 @@ public partial class MainPage : ContentPage
 
 		Log.IsStartEnabled = false;
 		Log.IsStopEnabled = true;
+		SetMosButtonsEnabled(false);
 		Log.StatusText = "Scanning";
 		_bandHeaderPrinted = false;
 
@@ -35,6 +38,7 @@ public partial class MainPage : ContentPage
 		LogDebug(debugLogPath is null ? "Full debug log unavailable." : $"Full debug log: {debugLogPath}");
 
 		_streamingCts = new CancellationTokenSource();
+		_runStopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		try
 		{
@@ -68,6 +72,8 @@ public partial class MainPage : ContentPage
 			Log.StatusText = "Idle";
 			Log.IsStartEnabled = true;
 			Log.IsStopEnabled = false;
+			SetMosButtonsEnabled(_lastWattCycleAdvertisement is not null);
+			_runStopped?.TrySetResult();
 		}
 	}
 
@@ -77,7 +83,16 @@ public partial class MainPage : ContentPage
 		LogDebug("Stopping...");
 		Log.StatusText = "Stopping";
 		Log.IsStopEnabled = false;
+		SetMosButtonsEnabled(false);
 	}
+
+	private async void OnMosBothClicked(object? sender, EventArgs e) => await SetMosAsync(chargeEnabled: true, dischargeEnabled: true);
+
+	private async void OnMosChargeOffClicked(object? sender, EventArgs e) => await SetMosAsync(chargeEnabled: false, dischargeEnabled: true);
+
+	private async void OnMosDischargeOffClicked(object? sender, EventArgs e) => await SetMosAsync(chargeEnabled: true, dischargeEnabled: false);
+
+	private async void OnMosBothOffClicked(object? sender, EventArgs e) => await SetMosAsync(chargeEnabled: false, dischargeEnabled: false);
 
 	private async Task RunMuseAsync(CancellationToken cancellationToken)
 	{
@@ -128,7 +143,65 @@ public partial class MainPage : ContentPage
 
 		Log.StatusText = $"Connecting to {advertisement.DisplayName}";
 		LogDebug($"Found {advertisement.DisplayName} at 0x{advertisement.BluetoothAddress:X}.");
+		_lastWattCycleAdvertisement = advertisement;
 		await _wattCycleClient.ConnectAndPollAsync(advertisement, cancellationToken);
+	}
+
+	private async Task SetMosAsync(bool chargeEnabled, bool dischargeEnabled)
+	{
+		var advertisement = _lastWattCycleAdvertisement;
+		if (advertisement is null)
+		{
+			LogDebug("No WattCycle battery has been found yet.");
+			return;
+		}
+
+		var confirmed = await DisplayAlertAsync(
+			"MOS control",
+			$"Set {advertisement.DisplayName}: charge={(chargeEnabled ? "ON" : "OFF")}, discharge={(dischargeEnabled ? "ON" : "OFF")}?",
+			"Set",
+			"Cancel");
+		if (!confirmed)
+		{
+			return;
+		}
+
+		SetMosButtonsEnabled(false);
+		await StopActiveRunBeforeCommandAsync();
+		LogDebug($"MOS control requested for {advertisement.DisplayName}: charge={chargeEnabled}, discharge={dischargeEnabled}");
+		try
+		{
+			await using var client = new WattCycleBtClient();
+			client.InfoMessage += (_, message) => LogDebug(message);
+			client.DiagnosticMessage += (_, message) => LogDebug(message);
+			client.ConnectionStatusChanged += (_, status) => MainThread.BeginInvokeOnMainThread(() => Log.StatusText = status);
+			var result = await client.SetMosAsync(advertisement, chargeEnabled, dischargeEnabled);
+			LogWattCycleReading(result.Reading);
+			LogDebug($"MOS readback charge={result.Reading.ChargeMosEnabled} discharge={result.Reading.DischargeMosEnabled} matches={result.Matches}");
+		}
+		catch (Exception ex)
+		{
+			LogDebug($"MOS control failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+		}
+		finally
+		{
+			SetMosButtonsEnabled(_lastWattCycleAdvertisement is not null);
+		}
+	}
+
+	private async Task StopActiveRunBeforeCommandAsync()
+	{
+		var runStopped = _runStopped;
+		if (runStopped is null || runStopped.Task.IsCompleted)
+		{
+			return;
+		}
+
+		LogDebug("Stopping active WattCycle poll before MOS command...");
+		_streamingCts?.Cancel();
+		Log.StatusText = "Stopping";
+		Log.IsStopEnabled = false;
+		await runStopped.Task;
 	}
 
 	private async Task StopClientAsync()
@@ -245,6 +318,15 @@ public partial class MainPage : ContentPage
 		{
 			Log.Add(message);
 		}
+	}
+
+	private void SetMosButtonsEnabled(bool isEnabled)
+	{
+		var enabled = isEnabled && GetSelectedBluetoothInterface() == BluetoothInterface.WattCycle;
+		MosBothButton.IsEnabled = enabled;
+		MosChargeOffButton.IsEnabled = enabled;
+		MosDischargeOffButton.IsEnabled = enabled;
+		MosBothOffButton.IsEnabled = enabled;
 	}
 
 	private static string FormatSensorName(string name) => name.StartsWith("EEG ", StringComparison.OrdinalIgnoreCase) ? name[4..] : name;

@@ -4,7 +4,7 @@
              xmlns:controls="clr-namespace:Gui.Controls"
              x:Class="BtHack.MainPage">
 
-    <Grid RowDefinitions="Auto,*">
+    <Grid RowDefinitions="Auto,Auto,*">
         <Grid
             Padding="10,8"
             ColumnDefinitions="Auto,*"
@@ -24,9 +24,41 @@
             </Picker>
         </Grid>
 
+        <Grid
+            Grid.Row="1"
+            Padding="10,0,10,8"
+            ColumnDefinitions="*,*"
+            ColumnSpacing="8"
+            RowDefinitions="Auto,Auto">
+            <Button
+                x:Name="MosBothButton"
+                Text="MOS Both On"
+                IsEnabled="False"
+                Clicked="OnMosBothClicked" />
+            <Button
+                x:Name="MosChargeOffButton"
+                Grid.Column="1"
+                Text="Charge Off"
+                IsEnabled="False"
+                Clicked="OnMosChargeOffClicked" />
+            <Button
+                x:Name="MosDischargeOffButton"
+                Grid.Row="1"
+                Text="Discharge Off"
+                IsEnabled="False"
+                Clicked="OnMosDischargeOffClicked" />
+            <Button
+                x:Name="MosBothOffButton"
+                Grid.Row="1"
+                Grid.Column="1"
+                Text="MOS Both Off"
+                IsEnabled="False"
+                Clicked="OnMosBothOffClicked" />
+        </Grid>
+
         <controls:LogView
             x:Name="Log"
-            Grid.Row="1"
+            Grid.Row="2"
             StartClicked="OnStartClicked"
             StopClicked="OnStopClicked" />
     </Grid>
