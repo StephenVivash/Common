@@ -1,4 +1,4 @@
-﻿namespace BtHack;
+namespace BtHack;
 
 public partial class AppShell : Shell
 {

@@ -18,7 +18,7 @@ public partial class MainPage : ContentPage
 	{
 		InitializeComponent();
 		BluetoothInterfacePicker.SelectedIndex = 1;
-    }
+	}
 
 	private async void OnStartClicked(object? sender, EventArgs e)
 	{

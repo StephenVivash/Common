@@ -1088,44 +1088,44 @@ namespace Muse.Core;
 #pragma warning disable CS0067
 public sealed class MuseBtClient : IAsyncDisposable
 {
-    public event EventHandler<string>? DiagnosticMessage;
+	public event EventHandler<string>? DiagnosticMessage;
 
-    public event EventHandler<string>? InfoMessage;
+	public event EventHandler<string>? InfoMessage;
 
-    public event EventHandler<string>? ConnectionStatusChanged;
+	public event EventHandler<string>? ConnectionStatusChanged;
 
-    public event EventHandler<MuseNotification>? NotificationReceived;
+	public event EventHandler<MuseNotification>? NotificationReceived;
 
-    public event EventHandler<MuseEegPacketDiagnostic>? EegPacketDiagnostic;
+	public event EventHandler<MuseEegPacketDiagnostic>? EegPacketDiagnostic;
 
-    public event EventHandler<MuseBandPowerDiagnostic>? BandPowerDiagnostic;
+	public event EventHandler<MuseBandPowerDiagnostic>? BandPowerDiagnostic;
 
-    public event EventHandler<MuseBandPowerReading>? BandPowersCalculated;
+	public event EventHandler<MuseBandPowerReading>? BandPowersCalculated;
 
-    public Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
-    {
-        _ = timeout;
-        InfoMessage?.Invoke(this, "Muse Bluetooth is currently implemented for Windows and Android only.");
-        return Task.FromResult<MuseDeviceAdvertisement?>(null);
-    }
+	public Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+	{
+		_ = timeout;
+		InfoMessage?.Invoke(this, "Muse Bluetooth is currently implemented for Windows and Android only.");
+		return Task.FromResult<MuseDeviceAdvertisement?>(null);
+	}
 
-    public Task ConnectAndStreamAsync(MuseDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        _ = discovered;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "Muse Bluetooth streaming is currently implemented for Windows and Android only.");
-        return Task.CompletedTask;
-    }
+	public Task ConnectAndStreamAsync(MuseDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
+	{
+		_ = discovered;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "Muse Bluetooth streaming is currently implemented for Windows and Android only.");
+		return Task.CompletedTask;
+	}
 
-    public Task SendControlCommandAsync(string command, CancellationToken cancellationToken = default)
-    {
-        _ = command;
-        _ = cancellationToken;
-        DiagnosticMessage?.Invoke(this, "Ignoring control command because Muse Bluetooth is not available on this platform.");
-        return Task.CompletedTask;
-    }
+	public Task SendControlCommandAsync(string command, CancellationToken cancellationToken = default)
+	{
+		_ = command;
+		_ = cancellationToken;
+		DiagnosticMessage?.Invoke(this, "Ignoring control command because Muse Bluetooth is not available on this platform.");
+		return Task.CompletedTask;
+	}
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+	public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 #pragma warning restore CS0067
 #endif

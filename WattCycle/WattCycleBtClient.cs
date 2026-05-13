@@ -1789,56 +1789,56 @@ namespace WattCycle.Core;
 #pragma warning disable CS0067
 public sealed class WattCycleBtClient : IAsyncDisposable
 {
-    public event EventHandler<string>? DiagnosticMessage;
-    public event EventHandler<string>? InfoMessage;
-    public event EventHandler<string>? ConnectionStatusChanged;
-    public event EventHandler<WattCycleBatteryReading>? BatteryReadingReceived;
+	public event EventHandler<string>? DiagnosticMessage;
+	public event EventHandler<string>? InfoMessage;
+	public event EventHandler<string>? ConnectionStatusChanged;
+	public event EventHandler<WattCycleBatteryReading>? BatteryReadingReceived;
 
-    public Task<WattCycleDeviceAdvertisement?> FindBatteryAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
-    {
-        _ = timeout;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows and Android only.");
-        return Task.FromResult<WattCycleDeviceAdvertisement?>(null);
-    }
+	public Task<WattCycleDeviceAdvertisement?> FindBatteryAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+	{
+		_ = timeout;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows and Android only.");
+		return Task.FromResult<WattCycleDeviceAdvertisement?>(null);
+	}
 
-    public Task<IReadOnlyList<WattCycleDeviceAdvertisement>> FindBatteriesAsync(
-        int maxBatteries,
-        TimeSpan timeout,
-        Action<WattCycleDeviceAdvertisement>? batteryDiscovered = null,
-        CancellationToken cancellationToken = default)
-    {
-        _ = maxBatteries;
-        _ = timeout;
-        _ = batteryDiscovered;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows and Android only.");
-        return Task.FromResult<IReadOnlyList<WattCycleDeviceAdvertisement>>(Array.Empty<WattCycleDeviceAdvertisement>());
-    }
+	public Task<IReadOnlyList<WattCycleDeviceAdvertisement>> FindBatteriesAsync(
+		int maxBatteries,
+		TimeSpan timeout,
+		Action<WattCycleDeviceAdvertisement>? batteryDiscovered = null,
+		CancellationToken cancellationToken = default)
+	{
+		_ = maxBatteries;
+		_ = timeout;
+		_ = batteryDiscovered;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows and Android only.");
+		return Task.FromResult<IReadOnlyList<WattCycleDeviceAdvertisement>>(Array.Empty<WattCycleDeviceAdvertisement>());
+	}
 
-    public Task<WattCycleMosControlResult> SetMosAsync(
-        WattCycleDeviceAdvertisement discovered,
-        bool chargeEnabled,
-        bool dischargeEnabled,
-        CancellationToken cancellationToken = default)
-    {
-        _ = discovered;
-        _ = chargeEnabled;
-        _ = dischargeEnabled;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows and Android only.");
-        return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows and Android only."));
-    }
+	public Task<WattCycleMosControlResult> SetMosAsync(
+		WattCycleDeviceAdvertisement discovered,
+		bool chargeEnabled,
+		bool dischargeEnabled,
+		CancellationToken cancellationToken = default)
+	{
+		_ = discovered;
+		_ = chargeEnabled;
+		_ = dischargeEnabled;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows and Android only.");
+		return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows and Android only."));
+	}
 
-    public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        _ = discovered;
-        _ = cancellationToken;
-        InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows and Android only.");
-        return Task.CompletedTask;
-    }
+	public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
+	{
+		_ = discovered;
+		_ = cancellationToken;
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows and Android only.");
+		return Task.CompletedTask;
+	}
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+	public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 #pragma warning restore CS0067
 #endif
