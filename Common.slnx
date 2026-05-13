@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Gui/Gui.csproj" Id="d4564405-75ea-4d85-8987-f02734878a0e" />
+  <Project Path="Muse/Muse.csproj" />
+  <Project Path="WattCycle/WattCycle.csproj" />
+</Solution>
