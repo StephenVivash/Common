@@ -1,3 +1,4 @@
+using Gui.Controls;
 using Muse.Core;
 using WattCycle.Core;
 
@@ -16,6 +17,8 @@ public partial class MainPage : ContentPage
 
 	public MainPage()
 	{
+		var b = new RegisterInViewDirectoryBehavior(); // { Key = "DiagramView1" };
+		Behaviors.Add(b);
 		InitializeComponent();
 		BluetoothInterfacePicker.SelectedIndex = 1;
 	}
