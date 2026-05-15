@@ -13,6 +13,7 @@ public partial class DetailPage : ContentPage
 	private const string RememberedBatteriesPreferenceKey = "remembered-batteries";
 	private static readonly TimeSpan BatteryGap = TimeSpan.FromSeconds(10);
 	private static readonly Color NeutralStateColor = Colors.Gray;
+	private static readonly Color ZeroStateColor = GetResourceColor("White", Colors.White);
 	private static readonly Color LowStateColor = GetResourceColor("Low", Colors.Green);
 	private static readonly Color HighStateColor = GetResourceColor("High", Colors.Red);
 	private CancellationTokenSource? _loopCts;
@@ -178,17 +179,28 @@ public partial class DetailPage : ContentPage
 	private static void UpdateRow(BatteryRow row, WattCycleBatteryReading reading)
 	{
 		row.StateOfChargeText = $"{reading.StateOfChargePercent}%";
-		row.StateOfChargeColor = reading.StateOfChargePercent < 25 ? HighStateColor : LowStateColor;
+		row.StateOfChargeColor = reading.StateOfChargePercent < 25 ? LowStateColor : HighStateColor;
 		row.VoltageText = $"{reading.PackVoltage:0.0}V";
-		row.VoltageColor = reading.PackVoltage < 13 ? HighStateColor : LowStateColor;
+		row.VoltageColor = reading.PackVoltage < 13 ? LowStateColor : HighStateColor;
 		row.CurrentText = $"{reading.Current:0.0}A";
-		row.CurrentColor = reading.Current >= 0 ? LowStateColor : HighStateColor;
+		row.CurrentColor = GetSignedStateColor(reading.Current);
 		row.PowerText = $"{reading.PowerWatts:0.0}W";
-		row.PowerColor = reading.PowerWatts >= 0 ? LowStateColor : HighStateColor;
+		row.PowerColor = GetSignedStateColor(reading.PowerWatts);
 		row.ChargeMosEnabled = reading.ChargeMosEnabled;
 		row.DischargeMosEnabled = reading.DischargeMosEnabled;
-		row.ChargeTextColor = reading.ChargeMosEnabled ? LowStateColor : HighStateColor;
-		row.DischargeTextColor = reading.DischargeMosEnabled ? LowStateColor : HighStateColor;
+		row.ChargeTextColor = reading.ChargeMosEnabled ? HighStateColor : LowStateColor;
+		row.DischargeTextColor = reading.DischargeMosEnabled ? HighStateColor : LowStateColor;
+	}
+
+	private static Color GetSignedStateColor(double value)
+	{
+		const double ZeroTolerance = 0.0001;
+		if (Math.Abs(value) < ZeroTolerance)
+		{
+			return ZeroStateColor;
+		}
+
+		return value > 0 ? HighStateColor : LowStateColor;
 	}
 
 	private void RecordHistorySample(BatteryRow row, WattCycleBatteryReading reading)

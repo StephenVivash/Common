@@ -96,8 +96,10 @@ internal static class TdtProtocol
 		var currentRaw = ReadUInt16(status, dataStart);
 		var current = (currentRaw & 0x3fff) / 10.0 * ((currentRaw & 0x8000) != 0 ? -1 : 1);
 
-		var protectionStatus = ReadProtectionStatus(protectionFrame.Payload, cellCount, tempCount);
-		var mosfets = ReadMosfets(protectionFrame.Payload, cellCount, tempCount);
+		if (!TryReadProtectionFields(protectionFrame.Payload, cellCount, tempCount, out var protectionStatus, out var mosfets))
+		{
+			return false;
+		}
 
 		reading = new WattCycleBatteryReading(
 			DateTimeOffset.Now,
@@ -139,9 +141,10 @@ internal static class TdtProtocol
 
 		var currentRaw = ReadUInt16(status, dataStart);
 		var current = (currentRaw & 0x3fff) / 10.0 * ((currentRaw & 0x8000) != 0 ? -1 : 1);
-		var mosfets = protectionFrame.Command == ProtectionCommand
-			? ReadMosfets(protectionFrame.Payload, cellCount, tempCount)
-			: 0;
+		var mosfets = protectionFrame.Command == ProtectionCommand &&
+			TryReadProtectionFields(protectionFrame.Payload, cellCount, tempCount, out _, out var parsedMosfets)
+			? parsedMosfets
+			: (byte)0;
 
 		return
 			$"TDT fields rawCurrent=0x{currentRaw:X4} decodedCurrent={current:F1}A " +
@@ -160,18 +163,21 @@ internal static class TdtProtocol
 		return BinaryPrimitives.ReadUInt16BigEndian(buffer[6..8]) + 11;
 	}
 
-	private static ushort ReadProtectionStatus(byte[] payload, int cellCount, int tempCount)
+	private static bool TryReadProtectionFields(byte[] payload, int cellCount, int tempCount, out ushort protectionStatus, out byte mosfets)
 	{
+		protectionStatus = 0;
+		mosfets = 0;
 		var idx = cellCount + tempCount;
-		var offset = idx + 6;
-		return payload.Length >= offset + 2 ? ReadUInt16(payload, offset) : (ushort)0;
-	}
+		var protectionOffset = idx + 6;
+		var mosfetOffset = idx + 8;
+		if (payload.Length <= mosfetOffset)
+		{
+			return false;
+		}
 
-	private static byte ReadMosfets(byte[] payload, int cellCount, int tempCount)
-	{
-		var idx = cellCount + tempCount;
-		var offset = idx + 8;
-		return payload.Length > offset ? payload[offset] : (byte)0;
+		protectionStatus = ReadUInt16(payload, protectionOffset);
+		mosfets = payload[mosfetOffset];
+		return true;
 	}
 
 	private static ushort ReadUInt16(byte[] bytes, int offset) => BinaryPrimitives.ReadUInt16BigEndian(bytes.AsSpan(offset, 2));
