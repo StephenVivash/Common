@@ -3,10 +3,11 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
 using WattCycle.Core;
+using WattCycleApp.Services;
 
-namespace WattCycleApp;
+namespace WattCycleApp.Pages;
 
-public partial class MainPage : ContentPage
+public partial class DetailPage : ContentPage
 {
 	private const string BatteryCountPreferenceKey = "battery-count";
 	private const string RememberedBatteriesPreferenceKey = "remembered-batteries";
@@ -16,10 +17,11 @@ public partial class MainPage : ContentPage
 	private static readonly Color HighStateColor = GetResourceColor("High", Colors.Red);
 	private CancellationTokenSource? _loopCts;
 	private int _knownBatteryCount;
+	private BatteryHistoryStore HistoryStore { get; } = BatteryHistoryStore.Default;
 
 	public ObservableCollection<BatteryRow> Batteries { get; } = new();
 
-	public MainPage()
+	public DetailPage()
 	{
 		InitializeComponent();
 		BindingContext = this;
@@ -139,6 +141,7 @@ public partial class MainPage : ContentPage
 		client.BatteryReadingReceived += (_, reading) =>
 		{
 			UpdateRow(row, reading);
+			RecordHistorySample(row, reading);
 			readingReceived.TrySetResult(reading);
 		};
 
@@ -186,6 +189,11 @@ public partial class MainPage : ContentPage
 		row.DischargeMosEnabled = reading.DischargeMosEnabled;
 		row.ChargeTextColor = reading.ChargeMosEnabled ? LowStateColor : HighStateColor;
 		row.DischargeTextColor = reading.DischargeMosEnabled ? LowStateColor : HighStateColor;
+	}
+
+	private void RecordHistorySample(BatteryRow row, WattCycleBatteryReading reading)
+	{
+		_ = HistoryStore.AddSampleAsync(row.BluetoothAddress, row.Name, reading);
 	}
 
 	private Task EnsureRowsAsync(IReadOnlyList<WattCycleDeviceAdvertisement> advertisements)

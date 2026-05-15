@@ -3,11 +3,11 @@
     x:Class="WattCycleApp.AppShell"
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-    xmlns:local="clr-namespace:WattCycleApp"
+    xmlns:pages="clr-namespace:WattCycleApp.Pages"
     >
 
     <ShellContent
-        ContentTemplate="{DataTemplate local:MainPage}"
-        Route="MainPage" />
+        ContentTemplate="{DataTemplate pages:DetailPage}"
+        Route="DetailPage" />
 
 </Shell>
