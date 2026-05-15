@@ -99,7 +99,7 @@ public partial class LogView : ContentView
 
 	public void Add(string message)
 	{
-		var entry = message;
+		var entry = $"[{DateTimeOffset.Now:HH:mm:ss.fff}] {message}";
 		AppendToFile(entry);
 		MainThread.BeginInvokeOnMainThread(() =>
 		{
