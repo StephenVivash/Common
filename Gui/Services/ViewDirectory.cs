@@ -1,5 +1,5 @@
 
-namespace Gui.Controls;
+namespace Gui.Services;
 
 #nullable enable
 
