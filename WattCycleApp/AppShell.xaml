@@ -4,10 +4,20 @@
     xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
     xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
     xmlns:pages="clr-namespace:WattCycleApp.Pages"
-    >
+    FlyoutBehavior="Flyout">
 
-    <ShellContent
-        ContentTemplate="{DataTemplate pages:DetailPage}"
-        Route="DetailPage" />
+    <FlyoutItem Title="Batteries"
+                Route="Batteries">
+        <ShellContent Title="Batteries"
+                      ContentTemplate="{DataTemplate pages:DetailPage}"
+                      Route="DetailPage" />
+    </FlyoutItem>
+
+    <FlyoutItem Title="Graphs"
+                Route="Graphs">
+        <ShellContent Title="Graphs"
+                      ContentTemplate="{DataTemplate pages:GraphPage}"
+                      Route="GraphPage" />
+    </FlyoutItem>
 
 </Shell>

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using LiveChartsCore.SkiaSharpView.Maui;
 
 namespace WattCycleApp
 {
@@ -9,6 +10,7 @@ namespace WattCycleApp
 			var builder = MauiApp.CreateBuilder();
 			builder
 				.UseMauiApp<App>()
+				.UseLiveCharts()
 				.ConfigureFonts(fonts =>
 				{
 					fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");

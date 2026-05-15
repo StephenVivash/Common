@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="WattCycleApp.Pages.GraphPage">
+    <Grid Padding="12"
+          RowDefinitions="Auto,*"
+          RowSpacing="8">
+        <Label Text="SOC % / Watts"
+               FontSize="18"
+               FontAttributes="Bold" />
+
+        <ContentView x:Name="ChartHost"
+                     Grid.Row="1" />
+
+        <Label x:Name="EmptyStateLabel"
+               Grid.Row="1"
+               Text="No graph data yet"
+               HorizontalOptions="Center"
+               VerticalOptions="Center"
+               TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
+               IsVisible="False" />
+    </Grid>
+</ContentPage>

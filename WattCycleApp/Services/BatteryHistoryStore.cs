@@ -89,11 +89,18 @@ public sealed class BatteryHistoryStore
 			return;
 		}
 
-		await using var stream = File.OpenRead(HistoryFilePath);
-		var samples = await JsonSerializer.DeserializeAsync<List<BatteryHistorySample>>(stream, JsonOptions);
-		if (samples is not null)
+		try
 		{
-			_samples.AddRange(samples);
+			await using var stream = File.OpenRead(HistoryFilePath);
+			var samples = await JsonSerializer.DeserializeAsync<List<BatteryHistorySample>>(stream, JsonOptions);
+			if (samples is not null)
+			{
+				_samples.AddRange(samples);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+		{
+			_samples.Clear();
 		}
 	}
 
