@@ -23,7 +23,7 @@ public static class AiPreferences
 	public const float AiTopPDefault = 1.0f;
 	public const int AiMaxTokensDefault = 10240;
 
-	public const string OpenAiModelDefault = "gpt-5.2";
+	public const string OpenAiModelDefault = "gpt-5.5";
 	public const string OpenAiEndPointDefault = "https://api.openai.com/v1";
 	public const string OpenAiKeyDefault = "";
 	public const string DeepSeekModelDefault = "deepseek-reasoner";
