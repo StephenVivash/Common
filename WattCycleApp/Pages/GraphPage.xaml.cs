@@ -1,5 +1,3 @@
-using System.Collections.ObjectModel;
-
 using LiveChartsCore;
 using LiveChartsCore.Defaults;
 using LiveChartsCore.SkiaSharpView;
@@ -30,8 +28,6 @@ public partial class GraphPage : ContentPage
 	private readonly BatteryHistoryStore _historyStore = BatteryHistoryStore.Default;
 	private CartesianChart? _historyChart;
 	private bool _refreshQueued;
-
-	public ObservableCollection<ISeries> Series { get; } = new();
 
 	public Axis[] XAxes { get; } =
 	[
@@ -93,20 +89,13 @@ public partial class GraphPage : ContentPage
 		var samples = await _historyStore.GetSamplesAsync();
 		var series = BuildSeries(samples);
 		var hasSeries = series.Count > 0;
-		EnsureChart(hasSeries);
+		await EnsureChartAsync(series);
 		EmptyStateLabel.IsVisible = !hasSeries;
-
-		Series.Clear();
-		foreach (var item in series)
-		{
-			Series.Add(item);
-		}
-
 	}
 
-	private void EnsureChart(bool hasSeries)
+	private async Task EnsureChartAsync(IReadOnlyList<ISeries> series)
 	{
-		if (!hasSeries)
+		if (series.Count == 0)
 		{
 			ChartHost.Content = null;
 			_historyChart = null;
@@ -115,18 +104,21 @@ public partial class GraphPage : ContentPage
 
 		if (_historyChart is not null)
 		{
+			_historyChart.Series = series;
 			return;
 		}
 
 		_historyChart = new CartesianChart
 		{
-			Series = Series,
+			Series = Array.Empty<ISeries>(),
 			XAxes = XAxes,
 			YAxes = YAxes,
-			LegendPosition = LiveChartsCore.Measure.LegendPosition.Bottom,
+			LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden,
 			ZoomMode = LiveChartsCore.Measure.ZoomAndPanMode.X
 		};
 		ChartHost.Content = _historyChart;
+		await Task.Yield();
+		_historyChart.Series = series;
 	}
 
 	private static IReadOnlyList<ISeries> BuildSeries(IReadOnlyList<BatteryHistorySample> samples)
@@ -169,6 +161,7 @@ public partial class GraphPage : ContentPage
 		{
 			Name = name,
 			Values = values,
+			IsVisibleAtLegend = false,
 			Fill = null,
 			GeometrySize = geometrySize,
 			LineSmoothness = 0,
