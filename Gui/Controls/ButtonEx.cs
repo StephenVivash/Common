@@ -2,14 +2,14 @@ namespace Gui.Controls;
 
 public class ButtonEx : Button
 {
-	private static readonly Color _bgColor = BtHack.App.Current?.RequestedTheme == AppTheme.Dark ? Colors.Black : Colors.White;
-	private static readonly Color _fgColor = BtHack.App.Current?.RequestedTheme == AppTheme.Dark ? Colors.White : Colors.Black;
+	private static readonly Color _bgColor = Colors.Black; // BtHack.App.Current?.RequestedTheme == AppTheme.Dark ? Colors.Black : Colors.White;
+	private static readonly Color _fgColor = Colors.White; // BtHack.App.Current?.RequestedTheme == AppTheme.Dark ? Colors.White : Colors.Black;
 
 	public ButtonEx()
 	{
-		//BackgroundColor = _bgColor;
-		//TextColor = _fgColor;
-		//BorderColor = _bgColor;
+		BackgroundColor = _bgColor;
+		TextColor = _fgColor;
+		BorderColor = _bgColor;
 		FontFamily = FluentIcons.IconFontFamily;
 #if WINDOWS || MACCATALYST
 		FontSize = 24;
