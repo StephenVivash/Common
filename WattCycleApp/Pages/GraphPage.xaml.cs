@@ -16,9 +16,9 @@ public partial class GraphPage : ContentPage
 	private static readonly SKColor[] BatteryColors =
 	[
 		SKColors.Red,
+		SKColors.Cyan,
 		SKColors.Orange,
 		SKColors.LimeGreen,
-		SKColors.Cyan,
 		SKColors.DeepSkyBlue,
 		SKColors.Magenta,
 		SKColors.Yellow,
@@ -34,7 +34,7 @@ public partial class GraphPage : ContentPage
 		new Axis
 		{
 			Labeler = FormatTimestamp,
-			LabelsRotation = 15,
+			//LabelsRotation = 15,
 			SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
 		}
 	];
@@ -43,7 +43,7 @@ public partial class GraphPage : ContentPage
 	[
 		new Axis
 		{
-			Name = "SOC % / |W|",
+			//Name = "SOC % / |W|",
 			MinLimit = 0,
 			SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
 		}
@@ -144,7 +144,7 @@ public partial class GraphPage : ContentPage
 
 				return new ISeries[]
 				{
-					CreateLineSeries($"{name} SOC", socPoints, color, 5, 4),
+					CreateLineSeries($"{name} SOC", socPoints, color, 4, 0), // 5 4
 					CreateLineSeries($"{name} |W|", wattPoints, color, 2, 0)
 				};
 			})
@@ -164,7 +164,7 @@ public partial class GraphPage : ContentPage
 			IsVisibleAtLegend = false,
 			Fill = null,
 			GeometrySize = geometrySize,
-			LineSmoothness = 0,
+			LineSmoothness = 1,
 			Stroke = new SolidColorPaint(color, strokeWidth),
 			GeometryStroke = new SolidColorPaint(color, strokeWidth),
 			GeometryFill = new SolidColorPaint(color)

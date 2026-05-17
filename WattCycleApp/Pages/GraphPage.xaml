@@ -2,12 +2,9 @@
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="WattCycleApp.Pages.GraphPage">
-    <Grid Padding="12"
+    <Grid Padding="0"
           RowDefinitions="Auto,*"
-          RowSpacing="8">
-        <Label Text="SOC % / Watts"
-               FontSize="18"
-               FontAttributes="Bold" />
+          RowSpacing="0">
 
         <ContentView x:Name="ChartHost"
                      Grid.Row="1" />
