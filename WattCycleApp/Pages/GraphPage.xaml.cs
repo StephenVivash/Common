@@ -1,5 +1,6 @@
 using LiveChartsCore;
 using LiveChartsCore.Defaults;
+using LiveChartsCore.Measure;
 using LiveChartsCore.SkiaSharpView;
 using LiveChartsCore.SkiaSharpView.Maui;
 using LiveChartsCore.SkiaSharpView.Painting;
@@ -113,8 +114,9 @@ public partial class GraphPage : ContentPage
 			Series = Array.Empty<ISeries>(),
 			XAxes = XAxes,
 			YAxes = YAxes,
-			LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden,
-			ZoomMode = LiveChartsCore.Measure.ZoomAndPanMode.X
+			LegendPosition = LegendPosition.Hidden,
+			TooltipPosition = TooltipPosition.Hidden,
+			ZoomMode = ZoomAndPanMode.X
 		};
 		ChartHost.Content = _historyChart;
 		await Task.Yield();

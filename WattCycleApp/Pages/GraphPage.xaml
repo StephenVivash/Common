@@ -1,20 +1,27 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-             x:Class="WattCycleApp.Pages.GraphPage">
-    <Grid Padding="0"
-          RowDefinitions="Auto,*"
-          RowSpacing="0">
+<ContentPage
+	xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+	xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+	x:Class="WattCycleApp.Pages.GraphPage"
+	>
+	<!--xmlns:local="clr-namespace:WattCycleApp"
+	x:DataType="local:Models.BatteryHistorySample"-->
+	<Grid
+		Padding="0"
+		RowDefinitions="Auto,*"
+		RowSpacing="0">
 
-        <ContentView x:Name="ChartHost"
-                     Grid.Row="1" />
+		<ContentView
+			x:Name="ChartHost"
+			Grid.Row="1" />
 
-        <Label x:Name="EmptyStateLabel"
-               Grid.Row="1"
-               Text="No graph data yet"
-               HorizontalOptions="Center"
-               VerticalOptions="Center"
-               TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
-               IsVisible="False" />
-    </Grid>
+		<Label
+			x:Name="EmptyStateLabel"
+			Grid.Row="1"
+			Text="No graph data yet"
+			HorizontalOptions="Center"
+			VerticalOptions="Center"
+			TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
+			IsVisible="False" />
+	</Grid>
 </ContentPage>
