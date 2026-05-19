@@ -4,10 +4,11 @@ using System.Runtime.CompilerServices;
 
 using WattCycle.Core;
 using WattCycleApp.Services;
+using static WattCycleApp.Controls.ToolBar;
 
 namespace WattCycleApp.Pages;
 
-public partial class DetailPage : ContentPage
+public partial class BatteryPage : ContentPage
 {
 	private const string BatteryCountPreferenceKey = "battery-count";
 	private const string RememberedBatteriesPreferenceKey = "remembered-batteries";
@@ -22,12 +23,40 @@ public partial class DetailPage : ContentPage
 
 	public ObservableCollection<BatteryRow> Batteries { get; } = new();
 
-	public DetailPage()
+	public BatteryPage()
 	{
 		InitializeComponent();
 		BindingContext = this;
 		BatteriesEntry.TextChanged += OnBatteryCountChanged;
+
+		horToolBar.Create(ePages.Battery, StackOrientation.Horizontal);
+		verToolBar.Create(ePages.Battery, StackOrientation.Vertical);
 	}
+
+	protected override void OnSizeAllocated(double width, double height)
+	{
+		if ((width == -1) || (height == -1))
+			return;
+
+#if ANDROID || IOS
+		if (width > height)
+		{
+			horToolBar.IsVisible = false;
+			verToolBar.IsVisible = true;
+		}
+		else
+		{
+			horToolBar.IsVisible = true;
+			verToolBar.IsVisible = false;
+		}
+#else
+		horToolBar.IsVisible = false;
+		verToolBar.IsVisible = true;
+#endif
+
+		base.OnSizeAllocated(width, height);
+	}
+
 
 	protected override async void OnAppearing()
 	{
