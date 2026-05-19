@@ -9,6 +9,7 @@ using SkiaSharp;
 
 using WattCycleApp.Models;
 using WattCycleApp.Services;
+using static WattCycleApp.Controls.ToolBar;
 
 namespace WattCycleApp.Pages;
 
@@ -54,6 +55,33 @@ public partial class GraphPage : ContentPage
 	{
 		InitializeComponent();
 		BindingContext = this;
+
+		horToolBar.Create(ePages.Graph, StackOrientation.Horizontal);
+		verToolBar.Create(ePages.Graph, StackOrientation.Vertical);
+	}
+
+	protected override void OnSizeAllocated(double width, double height)
+	{
+		if ((width == -1) || (height == -1))
+			return;
+
+#if ANDROID || IOS
+		if (width > height)
+		{
+			horToolBar.IsVisible = false;
+			verToolBar.IsVisible = true;
+		}
+		else
+		{
+			horToolBar.IsVisible = true;
+			verToolBar.IsVisible = false;
+		}
+#else
+		horToolBar.IsVisible = false;
+		verToolBar.IsVisible = true;
+#endif
+
+		base.OnSizeAllocated(width, height);
 	}
 
 	protected override async void OnAppearing()

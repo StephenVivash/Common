@@ -1,27 +1,45 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage
 	xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+	xmlns:toolkit="http://schemas.microsoft.com/dotnet/2022/maui/toolkit"
 	xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
 	x:Class="WattCycleApp.Pages.GraphPage"
+	xmlns:controls="clr-namespace:WattCycleApp.Controls"
 	>
 	<!--xmlns:local="clr-namespace:WattCycleApp"
 	x:DataType="local:Models.BatteryHistorySample"-->
-	<Grid
-		Padding="0"
-		RowDefinitions="Auto,*"
-		RowSpacing="0">
+	<toolkit:DockLayout
+		ShouldExpandLastChild="true"
+		>
 
-		<ContentView
-			x:Name="ChartHost"
-			Grid.Row="1" />
+		<controls:ToolBar
+			x:Name="horToolBar"
+			toolkit:DockLayout.DockPosition="Bottom"
+			/>
 
-		<Label
-			x:Name="EmptyStateLabel"
-			Grid.Row="1"
-			Text="No graph data yet"
-			HorizontalOptions="Center"
-			VerticalOptions="Center"
-			TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
-			IsVisible="False" />
-	</Grid>
+		<controls:ToolBar
+			x:Name="verToolBar"
+			toolkit:DockLayout.DockPosition="{x:Static controls:ToolBar.VerticalDockPosition}"
+			/>
+
+		<Grid
+			Padding="0"
+			RowDefinitions="Auto,*"
+			RowSpacing="0">
+
+			<ContentView
+				x:Name="ChartHost"
+				Grid.Row="1" />
+
+			<Label
+				x:Name="EmptyStateLabel"
+				Grid.Row="1"
+				Text="No graph data yet"
+				HorizontalOptions="Center"
+				VerticalOptions="Center"
+				TextColor="{AppThemeBinding Light=#606060, Dark=#B0B0B0}"
+				IsVisible="False" />
+		</Grid>
+
+	</toolkit:DockLayout>
 </ContentPage>

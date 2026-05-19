@@ -31,6 +31,8 @@ public partial class BatteryPage : ContentPage
 
 		horToolBar.Create(ePages.Battery, StackOrientation.Horizontal);
 		verToolBar.Create(ePages.Battery, StackOrientation.Vertical);
+
+		StartBatteries();
 	}
 
 	protected override void OnSizeAllocated(double width, double height)
@@ -61,14 +63,20 @@ public partial class BatteryPage : ContentPage
 	protected override async void OnAppearing()
 	{
 		base.OnAppearing();
-		LoadRememberedRows();
-		await StartAsync();
+		//LoadRememberedRows();
+		//await StartAsync();
 	}
 
 	protected override void OnDisappearing()
 	{
-		_loopCts?.Cancel();
+		//_loopCts?.Cancel();
 		base.OnDisappearing();
+	}
+
+	protected async void StartBatteries()
+	{    
+		LoadRememberedRows();
+		await StartAsync();
 	}
 
 	private async Task StartAsync()
