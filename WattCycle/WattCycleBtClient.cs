@@ -685,15 +685,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     private static bool LooksLikeBatteryName(string? name) =>
         !string.IsNullOrWhiteSpace(name) &&
-        (name.StartsWith("XDZN_001", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Cycle", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("BMS", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Battery", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("LiFe", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("LFP", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("BM-", StringComparison.OrdinalIgnoreCase) ||
-         name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase));
+        (name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase) ||
+         name.StartsWith("WT", StringComparison.OrdinalIgnoreCase));
 
     private WattCycleDeviceAdvertisement? SelectFallbackScanCandidate()
     {
@@ -1553,15 +1546,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 
     private static bool LooksLikeBatteryName(string? name) =>
         !string.IsNullOrWhiteSpace(name) &&
-        (name.StartsWith("XDZN_001", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Watt", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Cycle", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("BMS", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("Battery", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("LiFe", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("LFP", StringComparison.OrdinalIgnoreCase) ||
-         name.Contains("BM-", StringComparison.OrdinalIgnoreCase) ||
-         name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase));
+        (name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase) ||
+         name.StartsWith("WT", StringComparison.OrdinalIgnoreCase));
 
     private WattCycleDeviceAdvertisement? SelectFallbackScanCandidate()
     {

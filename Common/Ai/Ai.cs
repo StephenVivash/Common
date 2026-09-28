@@ -63,7 +63,7 @@ public class Ai
 			var http = new HttpClient
 			{
 				Timeout = TimeSpan.FromMinutes(
-				AiPreferences.IsOllamaService(aiService) ? 10 : 2)
+				AiPreferences.IsLocalService(aiService) ? 10 : 2)
 			};
 
 			builder.AddOpenAIChatCompletion(serviceInfo.ModelId,
@@ -114,7 +114,7 @@ public class Ai
 				var http = new HttpClient
 				{
 					Timeout = TimeSpan.FromMinutes(
-					AiPreferences.IsOllamaService(aiService) ? 10 : 2)
+					AiPreferences.IsLocalService(aiService) ? 10 : 2)
 				};
 
 				builder.AddOpenAIChatCompletion(serviceInfo.ModelId,

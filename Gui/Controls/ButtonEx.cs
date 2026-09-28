@@ -7,14 +7,14 @@ public class ButtonEx : Button
 
 	public ButtonEx()
 	{
-		BackgroundColor = _bgColor;
-		TextColor = _fgColor;
-		BorderColor = _bgColor;
 		FontFamily = FluentIcons.IconFontFamily;
 #if WINDOWS || MACCATALYST
 		FontSize = 24;
 #elif ANDROID || IOS
 		FontSize = 18;
+		BackgroundColor = _bgColor;
+		TextColor = _fgColor;
+		BorderColor = _bgColor;
 #endif
 	}
 

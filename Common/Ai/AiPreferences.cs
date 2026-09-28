@@ -166,9 +166,10 @@ public static class AiPreferences
 			|| serviceName.Equals(AiServiceNone, StringComparison.OrdinalIgnoreCase);
 	}
 
-	public static bool IsOllamaService(string? serviceName)
+	public static bool IsLocalService(string? serviceName)
 	{
-		return serviceName?.Equals("Ollama", StringComparison.OrdinalIgnoreCase) == true;
+		return serviceName?.Equals("Ollama", StringComparison.OrdinalIgnoreCase) == true ||
+		serviceName?.Equals("LMStudio", StringComparison.OrdinalIgnoreCase) == true;
 	}
 
 	public static float AiTemperature;

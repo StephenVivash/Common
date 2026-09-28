@@ -1,5 +1,6 @@
-using Microsoft.Extensions.Logging;
+using CommunityToolkit.Maui;
 using LiveChartsCore.SkiaSharpView.Maui;
+using Microsoft.Extensions.Logging;
 using SkiaSharp.Views.Maui.Controls.Hosting;
 
 namespace WattCycleApp
@@ -13,10 +14,12 @@ namespace WattCycleApp
 				.UseMauiApp<App>()
 				.UseSkiaSharp()
 				.UseLiveCharts()
+				.UseMauiCommunityToolkit()
 				.ConfigureFonts(fonts =>
 				{
 					fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
 					fonts.AddFont("OpenSans-Semibold.ttf", "OpenSansSemibold");
+					fonts.AddFont("SegoeIcons.ttf", "Segoe Fluent Icons");
 				});
 
 #if DEBUG

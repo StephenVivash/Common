@@ -1,5 +1,6 @@
 using LiveChartsCore;
 using LiveChartsCore.Defaults;
+using LiveChartsCore.Measure;
 using LiveChartsCore.SkiaSharpView;
 using LiveChartsCore.SkiaSharpView.Maui;
 using LiveChartsCore.SkiaSharpView.Painting;
@@ -8,6 +9,7 @@ using SkiaSharp;
 
 using WattCycleApp.Models;
 using WattCycleApp.Services;
+using static WattCycleApp.Controls.ToolBar;
 
 namespace WattCycleApp.Pages;
 
@@ -16,9 +18,9 @@ public partial class GraphPage : ContentPage
 	private static readonly SKColor[] BatteryColors =
 	[
 		SKColors.Red,
+		SKColors.Cyan,
 		SKColors.Orange,
 		SKColors.LimeGreen,
-		SKColors.Cyan,
 		SKColors.DeepSkyBlue,
 		SKColors.Magenta,
 		SKColors.Yellow,
@@ -34,7 +36,7 @@ public partial class GraphPage : ContentPage
 		new Axis
 		{
 			Labeler = FormatTimestamp,
-			LabelsRotation = 15,
+			//LabelsRotation = 15,
 			SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
 		}
 	];
@@ -43,7 +45,7 @@ public partial class GraphPage : ContentPage
 	[
 		new Axis
 		{
-			Name = "SOC % / |W|",
+			//Name = "SOC % / |W|",
 			MinLimit = 0,
 			SeparatorsPaint = new SolidColorPaint(new SKColor(80, 80, 80))
 		}
@@ -53,6 +55,33 @@ public partial class GraphPage : ContentPage
 	{
 		InitializeComponent();
 		BindingContext = this;
+
+		horToolBar.Create(ePages.Graph, StackOrientation.Horizontal);
+		verToolBar.Create(ePages.Graph, StackOrientation.Vertical);
+	}
+
+	protected override void OnSizeAllocated(double width, double height)
+	{
+		if ((width == -1) || (height == -1))
+			return;
+
+#if ANDROID || IOS
+		if (width > height)
+		{
+			horToolBar.IsVisible = false;
+			verToolBar.IsVisible = true;
+		}
+		else
+		{
+			horToolBar.IsVisible = true;
+			verToolBar.IsVisible = false;
+		}
+#else
+		horToolBar.IsVisible = false;
+		verToolBar.IsVisible = true;
+#endif
+
+		base.OnSizeAllocated(width, height);
 	}
 
 	protected override async void OnAppearing()
@@ -113,8 +142,9 @@ public partial class GraphPage : ContentPage
 			Series = Array.Empty<ISeries>(),
 			XAxes = XAxes,
 			YAxes = YAxes,
-			LegendPosition = LiveChartsCore.Measure.LegendPosition.Hidden,
-			ZoomMode = LiveChartsCore.Measure.ZoomAndPanMode.X
+			LegendPosition = LegendPosition.Hidden,
+			TooltipPosition = TooltipPosition.Hidden,
+			ZoomMode = ZoomAndPanMode.X
 		};
 		ChartHost.Content = _historyChart;
 		await Task.Yield();
@@ -144,7 +174,7 @@ public partial class GraphPage : ContentPage
 
 				return new ISeries[]
 				{
-					CreateLineSeries($"{name} SOC", socPoints, color, 5, 4),
+					CreateLineSeries($"{name} SOC", socPoints, color, 4, 0), // 5 4
 					CreateLineSeries($"{name} |W|", wattPoints, color, 2, 0)
 				};
 			})
@@ -164,7 +194,7 @@ public partial class GraphPage : ContentPage
 			IsVisibleAtLegend = false,
 			Fill = null,
 			GeometrySize = geometrySize,
-			LineSmoothness = 0,
+			//LineSmoothness = 1,
 			Stroke = new SolidColorPaint(color, strokeWidth),
 			GeometryStroke = new SolidColorPaint(color, strokeWidth),
 			GeometryFill = new SolidColorPaint(color)
