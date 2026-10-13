@@ -22,6 +22,7 @@ public partial class BatteryPage : ContentPage
 	private CancellationTokenSource? _loopCts;
 	private Task? _batteryLoopTask;
 	private bool _batteryControlInProgress;
+	private readonly BatteryPollingLog _pollLog = new();
 	private int _knownBatteryCount;
 	private BatteryHistoryStore HistoryStore { get; } = BatteryHistoryStore.Default;
 
@@ -290,57 +291,64 @@ public partial class BatteryPage : ContentPage
 
 	private async Task ReadBatteryAsync(BatteryRow row, WattCycleDeviceAdvertisement advertisement, TimeSpan timeout, CancellationToken cancellationToken)
 	{
+		var label = $"{advertisement.DisplayName} [0x{advertisement.BluetoothAddress:X12}]";
+		_pollLog.Write($"{label}: Poll started, previous status='{row.Status}', timeout={timeout.TotalSeconds:0}s.");
 		row.Status = "Connecting";
 		await using var client = new WattCycleBtClient();
 		using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 		readCts.CancelAfter(timeout);
-
-		var readingReceived = new TaskCompletionSource<WattCycleBatteryReading>(TaskCreationOptions.RunContinuationsAsynchronously);
-		client.InfoMessage += (_, message) => row.Status = message;
-		client.DiagnosticMessage += (_, message) =>
+		var attemptFinished = false;
+		using var deadlineRegistration = readCts.Token.Register(() =>
 		{
-			if (message.StartsWith("BMS service discovery failed", StringComparison.Ordinal) ||
-				message.StartsWith("Using ", StringComparison.Ordinal) ||
-				message.StartsWith("Connected", StringComparison.Ordinal))
+			if (cancellationToken.IsCancellationRequested) return;
+			_pollLog.Write($"{label}: Deadline expired; awaiting native completion and cleanup.");
+			MainThread.BeginInvokeOnMainThread(() =>
 			{
-				row.Status = message;
-			}
-		};
-		client.ConnectionStatusChanged += (_, status) => row.Status = status;
-		client.BatteryReadingReceived += (_, reading) =>
+				if (!attemptFinished) row.Status = "Timed out; closing connection";
+			});
+		});
+		client.InfoMessage += (_, message) =>
 		{
-			UpdateRow(row, reading);
-			RecordHistorySample(row, reading);
-			readingReceived.TrySetResult(reading);
+			_pollLog.Write($"{label}: {message}");
+			row.Status = message;
+		};
+		client.DiagnosticMessage += (_, message) => _pollLog.Write($"{label}: {message}");
+		client.ConnectionStatusChanged += (_, status) =>
+		{
+			_pollLog.Write($"{label}: Connection status={status}");
+			row.Status = status;
 		};
 
-		var pollTask = client.ConnectAndPollAsync(advertisement, readCts.Token);
 		try
 		{
-			await readingReceived.Task.WaitAsync(timeout, cancellationToken);
+			// ReadOnceAsync returns only after releasing this attempt's native connection.
+			var reading = await client.ReadOnceAsync(advertisement, readCts.Token);
+			readCts.CancelAfter(Timeout.InfiniteTimeSpan);
+			UpdateRow(row, reading);
+			RecordHistorySample(row, reading);
 			row.Status = $"Updated {DateTime.Now:HH:mm:ss}";
+			_pollLog.Write($"{label}: Read succeeded, C={reading.ChargeMosEnabled}, D={reading.DischargeMosEnabled}.");
 		}
-		catch (TimeoutException)
+		catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && readCts.IsCancellationRequested)
 		{
-			if (row.Status is "Connecting" or "Connected" or "Polling" or "Found" or "Waiting")
-			{
-				row.Status = $"Timed out after {timeout.TotalSeconds:0}s";
-			}
+			row.Status = $"Timed out after {timeout.TotalSeconds:0}s";
+			_pollLog.Write($"{label}: {row.Status}");
+		}
+		catch (OperationCanceledException)
+		{
+			_pollLog.Write($"{label}: Poll cancelled by app.");
+			throw;
+		}
+		catch (Exception ex)
+		{
+			row.Status = ex is TimeoutException ? $"Timed out: {ex.Message}" : $"{ex.GetType().Name}: {ex.Message}";
+			_pollLog.Write($"{label}: Poll failed: {ex}");
 		}
 		finally
 		{
-			readCts.Cancel();
-			try
-			{
-				await pollTask;
-			}
-			catch (OperationCanceledException)
-			{
-			}
-			catch (Exception ex)
-			{
-				row.Status = $"{ex.GetType().Name}: {ex.Message}";
-			}
+			attemptFinished = true;
+			readCts.CancelAfter(Timeout.InfiniteTimeSpan);
+			_pollLog.Write($"{label}: Poll finished, status='{row.Status}'.");
 		}
 	}
 

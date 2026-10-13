@@ -60,3 +60,4 @@ Check(coalesced.Count == 2, "Coalesced ACK + status lost");
 Check(Convert.ToHexString(TdtProtocol.BuildReadCommand(0x8c, 0x1e)) == "1E000103008C0000B1440D", "Known read command changed");
 Console.WriteLine($"PASS: {checks} protocol checks (no Bluetooth writes performed).");
 Console.WriteLine($"PASS: {await GattRecoveryChecks.RunAsync()} Android GATT recovery checks (simulated callbacks, no Bluetooth writes).");
+Console.WriteLine($"PASS: {await ReadAttemptChecks.RunAsync()} poll lifecycle checks (simulated connections, no Bluetooth writes).");

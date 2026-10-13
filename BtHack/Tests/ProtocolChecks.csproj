@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="$(ProtocolSource)\TdtProtocol.cs" Link="TdtProtocol.cs" />
     <Compile Include="$(ProtocolSource)\GattSessionOperations.cs" Link="GattSessionOperations.cs" />
+    <Compile Include="$(ProtocolSource)\BluetoothReadAttempt.cs" Link="BluetoothReadAttempt.cs" />
     <Compile Include="..\..\WattCycle\TdtFrameReader.cs" Link="TdtFrameReader.cs" />
     <Compile Include="..\..\WattCycle\WattCycleModels.cs" Link="WattCycleModels.cs" />
   </ItemGroup>

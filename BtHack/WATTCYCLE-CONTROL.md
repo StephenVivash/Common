@@ -172,3 +172,45 @@ status line; diagnostic logging remains available. That status stays visible whi
 monitoring reconnects and clears on the next successful reading. Charge/discharge
 columns use C/D labels and 24-unit widths, leaving the other three columns for
 voltage, current and power.
+
+## Scheduled polling recovery — 2026-10-13
+
+The user still observes more failures after an earlier failure, on both Windows
+and Android, with recovery after restarting the app. No persistent polling log
+was available to establish the cause. The status label remains display-only.
+
+The app previously started the library's continuous reconnect loop for every
+scheduled read, then cancelled that loop on the first reading or the overall
+deadline. It now uses `ReadOnceAsync`: one connection attempt, one reading, and
+awaited cleanup on success, failure, or cancellation. An early failure is reported
+immediately. The next scheduled poll starts with a fresh client; there are no
+rapid reconnect attempts inside that poll. BtHack's continuous monitoring API
+remains available.
+
+Windows discovery now checks the deadline before each operation and stops on an
+unreachable battery. Native reads, writes and discovery are allowed to finish
+before handles are released; cancellation stops subsequent operations. Microsoft
+[documents that connection requests cannot currently be cancelled and can queue](https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/gatt-client).
+Consequently a Windows attempt can exceed its configured deadline while an
+in-flight native request drains. The row reports "Timed out; closing connection"
+during that interval. Windows reconnects also reset partial protocol buffers,
+and disconnection faults pending BMS response waits.
+
+Both app platforms now record diagnostics in `WattCyclePolling.log` in their app
+data directory, rotating at 2 MiB to one `WattCyclePolling.previous.log` backup.
+Entries include a session identifier, library build ID, battery address, previous
+status, elapsed time, connection events, frames, exceptions, and cleanup. Control
+logs remain separate. Logging failures cannot interrupt Bluetooth cleanup.
+
+Validation: 57 protocol, 81 simulated Android GATT recovery, and 278 simulated
+poll lifecycle checks pass. The lifecycle checks cover cancellation while a
+Windows-style native request is outstanding, gated cleanup on success/failure,
+and 90 alternating failed/healthy attempts without retries or retained sessions.
+These checks cannot establish whether the physical batteries recover reliably;
+that requires running the updated app through several cycles without restarting
+and inspecting the new polling logs if failures accumulate again.
+
+Both final Windows and Android app builds pass with existing ToolBar nullability
+warnings. The signed Android APK embeds the updated app and library assemblies
+and is located at
+`C:\Src\Common\WattCycleApp\bin\Debug\net10.0-android\com.companyname.wattcycleapp-Signed.apk`.
