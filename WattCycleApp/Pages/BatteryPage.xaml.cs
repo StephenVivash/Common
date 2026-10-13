@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using CommunityToolkit.Maui;
+using CommunityToolkit.Maui.Extensions;
 
 using WattCycle.Core;
+using WattCycleApp.Controls;
 using WattCycleApp.Services;
 using static WattCycleApp.Controls.ToolBar;
 
@@ -18,6 +21,7 @@ public partial class BatteryPage : ContentPage
 	private static readonly Color HighStateColor = GetResourceColor("High", Colors.Red);
 	private CancellationTokenSource? _loopCts;
 	private Task? _batteryLoopTask;
+	private bool _batteryControlInProgress;
 	private int _knownBatteryCount;
 	private BatteryHistoryStore HistoryStore { get; } = BatteryHistoryStore.Default;
 
@@ -64,7 +68,7 @@ public partial class BatteryPage : ContentPage
 
 	protected void StartBatteries()
 	{
-		if (_batteryLoopTask is { IsCompleted: false })
+		if (_batteryControlInProgress || _batteryLoopTask is { IsCompleted: false })
 		{
 			return;
 		}
@@ -72,6 +76,114 @@ public partial class BatteryPage : ContentPage
 		LoadRememberedRows();
 		_batteryLoopTask = StartAsync();
 		_ = ObserveBatteryLoopAsync(_batteryLoopTask);
+	}
+
+	private async void OnBatteryTapped(object? sender, TappedEventArgs e)
+	{
+		if (_batteryControlInProgress || e.Parameter is not BatteryRow row || row.BluetoothAddress == 0)
+		{
+			return;
+		}
+
+		// Capture the selected battery before awaiting the dialog or stopping discovery.
+		var advertisement = new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false);
+		_batteryControlInProgress = true;
+		var monitoringPaused = false;
+		BatteryControlLog? controlLog = null;
+		var controlStep = "Opening dialog";
+		try
+		{
+			var dialogResult = await this.ShowPopupAsync<string>(
+				new BatteryControlDialog(advertisement.DisplayName), PopupOptions.Empty);
+			var action = dialogResult.Result;
+			if (action is not ("On" or "Off"))
+			{
+				return;
+			}
+
+			row.ClearControlStatus();
+			controlLog = new BatteryControlLog(advertisement.DisplayName, advertisement.BluetoothAddress);
+			controlLog.Write($"Requested battery {action.ToLowerInvariant()}; log={controlLog.FilePath}");
+			controlStep = "Checking Bluetooth permission";
+			controlLog.Write(controlStep);
+			if (!await EnsureBluetoothPermissionsAsync())
+			{
+				row.ShowControlStatus("Bluetooth permission required");
+				controlLog.Write("Control stopped: Bluetooth permission denied.");
+				return;
+			}
+
+			monitoringPaused = true;
+			controlStep = "Stopping polling";
+			controlLog.Write(controlStep);
+			row.Status = "Pausing monitoring";
+			await PauseBatteryMonitoringAsync();
+			controlLog.Write("Polling stopped; its Bluetooth client has been disposed.");
+			var enabled = action == "On";
+			row.Status = enabled ? "Turning on…" : "Turning off…";
+			using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+			await using var client = new WattCycleBtClient();
+			client.DiagnosticMessage += (_, message) => controlLog.Write(message);
+			client.InfoMessage += (_, message) => controlLog.Write($"Info: {message}");
+			client.ConnectionStatusChanged += (_, status) => controlLog.Write($"Connection: {status}");
+			controlStep = "Connecting and setting switches";
+			controlLog.Write(controlStep);
+			var result = await client.SetMosAsync(advertisement, enabled, enabled, timeout.Token);
+			controlLog.Write($"Result: charge={result.Reading.ChargeMosEnabled}, discharge={result.Reading.DischargeMosEnabled}, matches={result.Matches}");
+			controlStep = "Updating battery display";
+			UpdateRow(row, result.Reading);
+			RecordHistorySample(row, result.Reading);
+			if (result.Matches)
+			{
+				row.Status = $"Battery {action.ToLowerInvariant()} · {DateTime.Now:HH:mm:ss}";
+			}
+			else
+			{
+				row.ShowControlStatus($"Unconfirmed {action.ToLowerInvariant()}: " +
+					$"C {(result.Reading.ChargeMosEnabled ? "On" : "Off")}, " +
+					$"D {(result.Reading.DischargeMosEnabled ? "On" : "Off")}");
+			}
+		}
+		catch (OperationCanceledException ex)
+		{
+			controlLog?.Write($"Cancelled at {controlStep}: {ex}");
+			row.ShowControlStatus("Control timed out; state unconfirmed");
+		}
+		catch (Exception ex)
+		{
+			controlLog?.Write($"Failed at {controlStep}: {ex.GetType().Name} 0x{ex.HResult:X8} {ex}");
+			row.ShowControlStatus(ex is TimeoutException
+				? "Control timed out; state unconfirmed"
+				: "Control failed; state unconfirmed");
+		}
+		finally
+		{
+			_batteryControlInProgress = false;
+			if (monitoringPaused)
+			{
+				controlLog?.Write("Resuming monitoring");
+				// Preserve the current rows and verified reading when resuming.
+				_batteryLoopTask = StartAsync();
+				_ = ObserveBatteryLoopAsync(_batteryLoopTask);
+			}
+		}
+	}
+
+	private async Task PauseBatteryMonitoringAsync()
+	{
+		_loopCts?.Cancel();
+		if (_batteryLoopTask is not null)
+		{
+			try
+			{
+				// Wait for the polling client's cleanup before connecting for control.
+				await _batteryLoopTask;
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Battery monitoring stopped: {ex.Message}");
+			}
+		}
 	}
 
 	private async Task ObserveBatteryLoopAsync(Task batteryLoopTask)
@@ -234,6 +346,7 @@ public partial class BatteryPage : ContentPage
 
 	private static void UpdateRow(BatteryRow row, WattCycleBatteryReading reading)
 	{
+		row.ClearControlStatus();
 		row.StateOfChargeText = $"{reading.StateOfChargePercent}%";
 		row.StateOfChargeColor = reading.StateOfChargePercent < 25 ? LowStateColor : HighStateColor;
 		row.VoltageText = $"{reading.PackVoltage:0.0}V";
@@ -499,6 +612,7 @@ public partial class BatteryPage : ContentPage
 		private Color _chargeTextColor = NeutralStateColor;
 		private Color _dischargeTextColor = NeutralStateColor;
 		private string _status = "Waiting";
+		private string? _controlStatus;
 
 		public BatteryRow(WattCycleDeviceAdvertisement advertisement)
 			: this(advertisement.BluetoothAddress, advertisement.DisplayName)
@@ -600,9 +714,14 @@ public partial class BatteryPage : ContentPage
 
 		public string Status
 		{
-			get => _status;
+			get => _controlStatus ?? _status;
 			set => SetField(ref _status, value);
 		}
+
+		// Keep a control failure visible while monitoring reconnects, until a fresh reading arrives.
+		public void ShowControlStatus(string status) => SetField(ref _controlStatus, status, nameof(Status));
+
+		public void ClearControlStatus() => SetField(ref _controlStatus, null, nameof(Status));
 
 		private void SetField<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
 		{

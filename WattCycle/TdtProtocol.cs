@@ -5,6 +5,11 @@ namespace WattCycle.Core;
 
 internal static class TdtProtocol
 {
+	// Verified against Wattcycle_11_11_betaV4.apk: WattBleProtocolRepository.
+	public const byte ChargeSwitchCommand = 0x82;
+	public const byte DischargeSwitchCommand = 0x83;
+	public const byte ReadFunction = 0x03;
+	public const byte WriteFunction = 0x06;
 	public const byte StatusCommand = 0x8c;
 	public const byte ProtectionCommand = 0x8d;
 	public static readonly byte[] UnlockCommand = Encoding.ASCII.GetBytes("HiLink");
@@ -26,15 +31,33 @@ internal static class TdtProtocol
 		return frame.ToArray();
 	}
 
+	public static byte[] BuildMosSwitchCommand(bool chargeSwitch, bool enabled, byte commandHead)
+	{
+		// The switches are separate one-byte writes, not a combined JBD MOS mask.
+		var frame = new byte[12];
+		frame[0] = commandHead;
+		frame[2] = 0x01;
+		frame[3] = WriteFunction;
+		frame[5] = chargeSwitch ? ChargeSwitchCommand : DischargeSwitchCommand;
+		frame[7] = 0x01;
+		frame[8] = enabled ? (byte)1 : (byte)0;
+		BinaryPrimitives.WriteUInt16BigEndian(frame.AsSpan(9, 2), CrcModbus(frame.AsSpan(0, 9)));
+		frame[11] = 0x0d;
+		return frame;
+	}
+
+	public static bool IsSuccessfulWriteResponse(TdtFrame frame) =>
+		frame.Function == WriteFunction && frame.Payload.Length == 0;
+
 	public static bool TryParseFrame(ReadOnlySpan<byte> frame, out TdtFrame parsed)
 	{
 		parsed = new TdtFrame(0, Array.Empty<byte>());
-		if (frame.Length < 10 || frame[0] != 0x7e || frame[^1] != 0x0d)
+		if (frame.Length < 11 || frame[0] != 0x7e || frame[^1] != 0x0d)
 		{
 			return false;
 		}
 
-		if (frame[1] is not (0x00 or 0x04) || frame[4] != 0x00)
+		if (frame[1] is not (0x00 or 0x04) || frame[2] != 0x01 || frame[4] != 0x00)
 		{
 			return false;
 		}
@@ -52,7 +75,7 @@ internal static class TdtProtocol
 			return false;
 		}
 
-		parsed = new TdtFrame(frame[5], frame.Slice(8, dataLength).ToArray());
+		parsed = new TdtFrame(frame[5], frame.Slice(8, dataLength).ToArray(), frame[3]);
 		return true;
 	}
 
@@ -198,4 +221,4 @@ internal static class TdtProtocol
 	}
 }
 
-internal sealed record TdtFrame(byte Command, byte[] Payload);
+internal sealed record TdtFrame(byte Command, byte[] Payload, byte Function = TdtProtocol.ReadFunction);

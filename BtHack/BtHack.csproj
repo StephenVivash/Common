@@ -71,6 +71,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<Compile Remove="Tests\**\*.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\Gui\Gui.csproj" />
 		<ProjectReference Include="..\Muse\Muse.csproj" />
 		<ProjectReference Include="..\WattCycle\WattCycle.csproj" />
