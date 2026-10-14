@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/BtHack/" />
+  <Folder Name="/BtHack/Tests/">
+    <Project Path="BtHack/Tests/ProtocolChecks.csproj" />
+  </Folder>
   <Project Path="BtHack/BtHack.csproj" />
   <Project Path="Gui/Gui.csproj" />
   <Project Path="Muse/Muse.csproj" />
