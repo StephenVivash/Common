@@ -14,6 +14,7 @@ public partial class MainPage : ContentPage
 	private WattCycleDeviceAdvertisement? _lastWattCycleAdvertisement;
 	private TaskCompletionSource? _runStopped;
 	private bool _bandHeaderPrinted;
+	private bool _mosCommandInProgress;
 
 	public MainPage()
 	{
@@ -25,6 +26,11 @@ public partial class MainPage : ContentPage
 
 	private async void OnStartClicked(object? sender, EventArgs e)
 	{
+		if (_mosCommandInProgress)
+		{
+			return;
+		}
+
 		if (!await EnsureBluetoothPermissionsAsync())
 		{
 			return;
@@ -152,6 +158,11 @@ public partial class MainPage : ContentPage
 
 	private async Task SetMosAsync(bool chargeEnabled, bool dischargeEnabled)
 	{
+		if (_mosCommandInProgress)
+		{
+			return;
+		}
+
 		var advertisement = _lastWattCycleAdvertisement;
 		if (advertisement is null)
 		{
@@ -159,35 +170,59 @@ public partial class MainPage : ContentPage
 			return;
 		}
 
-		var confirmed = await DisplayAlertAsync(
-			"MOS control",
-			$"Set {advertisement.DisplayName}: charge={(chargeEnabled ? "ON" : "OFF")}, discharge={(dischargeEnabled ? "ON" : "OFF")}?",
-			"Set",
-			"Cancel");
-		if (!confirmed)
-		{
-			return;
-		}
-
+		_mosCommandInProgress = true;
 		SetMosButtonsEnabled(false);
-		await StopActiveRunBeforeCommandAsync();
-		LogDebug($"MOS control requested for {advertisement.DisplayName}: charge={chargeEnabled}, discharge={dischargeEnabled}");
+		Log.IsStartEnabled = false;
 		try
 		{
-			await using var client = new WattCycleBtClient();
-			client.InfoMessage += (_, message) => LogDebug(message);
-			client.DiagnosticMessage += (_, message) => LogDebug(message);
-			client.ConnectionStatusChanged += (_, status) => MainThread.BeginInvokeOnMainThread(() => Log.StatusText = status);
-			var result = await client.SetMosAsync(advertisement, chargeEnabled, dischargeEnabled);
-			LogWattCycleReading(result.Reading);
-			LogDebug($"MOS readback charge={result.Reading.ChargeMosEnabled} discharge={result.Reading.DischargeMosEnabled} matches={result.Matches}");
-		}
-		catch (Exception ex)
-		{
-			LogDebug($"MOS control failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+			var confirmed = await DisplayAlertAsync(
+				"MOS control",
+				$"Set {advertisement.DisplayName}: charge={(chargeEnabled ? "ON" : "OFF")}, discharge={(dischargeEnabled ? "ON" : "OFF")}?",
+				"Set",
+				"Cancel");
+			if (!confirmed)
+			{
+				return;
+			}
+
+			await StopActiveRunBeforeCommandAsync();
+			Log.IsStartEnabled = false;
+			Log.IsStopEnabled = false;
+			BluetoothInterfacePicker.IsEnabled = false;
+			var debugLogPath = Log.StartFileLog("WattCycleMosDebug");
+			LogDebug(debugLogPath is null ? "Full MOS debug log unavailable." : $"Full MOS debug log: {debugLogPath}");
+			LogDebug($"MOS control requested for {advertisement.DisplayName}: charge={chargeEnabled}, discharge={dischargeEnabled}");
+			try
+			{
+				await using var client = new WattCycleBtClient();
+				client.InfoMessage += (_, message) => LogDebug(message);
+				client.DiagnosticMessage += (_, message) => LogDebug(message);
+				client.ConnectionStatusChanged += (_, status) => MainThread.BeginInvokeOnMainThread(() => Log.StatusText = status);
+				var result = await client.SetMosAsync(advertisement, chargeEnabled, dischargeEnabled);
+				LogWattCycleReading(result.Reading);
+				LogDebug($"MOS readback charge={result.Reading.ChargeMosEnabled} discharge={result.Reading.DischargeMosEnabled} matches={result.Matches}");
+				Log.StatusText = result.Matches ? "MOS readback matches" : "MOS readback mismatch";
+			}
+			catch (Exception ex)
+			{
+				LogDebug($"MOS control failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+				Log.StatusText = "MOS control failed";
+			}
+			finally
+			{
+				var savedLogPath = Log.LogFilePath;
+				if (!string.IsNullOrWhiteSpace(savedLogPath))
+				{
+					LogDebug($"MOS debug log saved to {savedLogPath}");
+				}
+				Log.StopFileLog();
+			}
 		}
 		finally
 		{
+			_mosCommandInProgress = false;
+			BluetoothInterfacePicker.IsEnabled = true;
+			Log.IsStartEnabled = _runStopped is null || _runStopped.Task.IsCompleted;
 			SetMosButtonsEnabled(_lastWattCycleAdvertisement is not null);
 		}
 	}
@@ -325,7 +360,7 @@ public partial class MainPage : ContentPage
 
 	private void SetMosButtonsEnabled(bool isEnabled)
 	{
-		var enabled = isEnabled && GetSelectedBluetoothInterface() == BluetoothInterface.WattCycle;
+		var enabled = isEnabled && !_mosCommandInProgress && GetSelectedBluetoothInterface() == BluetoothInterface.WattCycle;
 		MosBothButton.IsEnabled = enabled;
 		MosChargeOffButton.IsEnabled = enabled;
 		MosDischargeOffButton.IsEnabled = enabled;

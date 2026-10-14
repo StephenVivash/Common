@@ -40,6 +40,11 @@
 							StrokeThickness="1"
 							Padding="10"
 							Margin="0,0,0,8">
+							<Border.GestureRecognizers>
+								<TapGestureRecognizer
+									Tapped="OnBatteryTapped"
+									CommandParameter="{Binding .}" />
+							</Border.GestureRecognizers>
 							<Grid
 								RowDefinitions="Auto,Auto,Auto"
 								ColumnDefinitions="*,Auto"
@@ -59,7 +64,7 @@
 								<Grid
 									Grid.Row="1"
 									Grid.ColumnSpan="2"
-									ColumnDefinitions="*,*,*,*,*"
+									ColumnDefinitions="*,*,*,24,24"
 									ColumnSpacing="1">
 									<Label
 										Text="{Binding VoltageText}"
@@ -77,13 +82,15 @@
 										FontSize="14" />
 									<Label
 										Grid.Column="3"
-										Text="Cha"
+										Text="C"
+										SemanticProperties.Description="Charge MOS"
 										TextColor="{Binding ChargeTextColor}"
 										FontSize="14"
 										HorizontalTextAlignment="Center" />
 									<Label
 										Grid.Column="4"
-										Text="Dis"
+										Text="D"
+										SemanticProperties.Description="Discharge MOS"
 										TextColor="{Binding DischargeTextColor}"
 										FontSize="14"
 										HorizontalTextAlignment="Center" />

@@ -12,6 +12,8 @@
 		either BOTH runtimes must be indicated or ONLY macatalyst-x64. -->
 		<!-- For example: <RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers> -->
 
+		<EnableWindowsTargeting>true</EnableWindowsTargeting>
+
 		<OutputType>Exe</OutputType>
 		<RootNamespace>BtHack</RootNamespace>
 		<UseMaui>true</UseMaui>
@@ -67,7 +69,11 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Maui.Controls" Version="10.0.110" />
-		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.12" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.13" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Remove="Tests\**\*.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
