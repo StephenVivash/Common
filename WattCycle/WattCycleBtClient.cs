@@ -8,10 +8,8 @@ using Windows.Storage.Streams;
 
 namespace WattCycle.Core;
 
-public sealed class WattCycleBtClient : IAsyncDisposable
+public sealed partial class WattCycleBtClient : IAsyncDisposable
 {
-    private JbdFrameReader _frameReader = new();
-    private TdtFrameReader _tdtFrameReader = new();
     private readonly ConcurrentDictionary<ulong, WattCycleScanCandidate> _scanCandidates = new();
     private BluetoothLEDevice? _device;
     private GattDeviceService? _service;
@@ -19,10 +17,6 @@ public sealed class WattCycleBtClient : IAsyncDisposable
     private GattCharacteristic? _write;
     private GattCharacteristic? _config;
     private TaskCompletionSource? _connectionLost;
-    private PendingCommand? _pendingCommand;
-    private PendingTdtCommand? _pendingTdtCommand;
-    private byte _tdtCommandHead = 0x1e;
-    private BmsProtocolKind _protocolKind = BmsProtocolKind.Jbd;
 
     public event EventHandler<string>? DiagnosticMessage;
     public event EventHandler<string>? InfoMessage;
@@ -148,90 +142,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
     }
 
-    public async Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        var reconnectAttempt = 0;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (reconnectAttempt > 0)
-                {
-                    OnDiagnostic($"Reconnect attempt {reconnectAttempt} to {discovered.DisplayName}...");
-                }
 
-                await ConnectAndPollOnceAsync(discovered, cancellationToken);
-            }
-            catch (System.OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or InvalidOperationException)
-            {
-                OnInfo($"WattCycle BT poll failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-            }
-            finally
-            {
-                await CleanupConnectionAsync();
-            }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            reconnectAttempt++;
-            var delay = GetReconnectDelay(reconnectAttempt);
-            ConnectionStatusChanged?.Invoke(this, "Reconnecting");
-            OnDiagnostic($"Reconnecting to {discovered.DisplayName} in {delay.TotalSeconds:F1}s...");
-            await Task.Delay(delay, cancellationToken);
-        }
-    }
-
-    public Task<WattCycleBatteryReading> ReadOnceAsync(WattCycleDeviceAdvertisement discovered,
-        CancellationToken cancellationToken = default) => BluetoothReadAttempt.RunAsync(
-            () => ConnectForCommandAsync(discovered, cancellationToken),
-            () => ReadBatteryAsync(cancellationToken),
-            async () =>
-            {
-                OnDiagnostic("Read attempt cleanup started.");
-                await CleanupConnectionAsync();
-                OnDiagnostic("Read attempt cleanup completed.");
-            }, cancellationToken);
-    public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
-
-    public async Task<WattCycleMosControlResult> SetMosAsync(
-        WattCycleDeviceAdvertisement discovered,
-        bool chargeEnabled,
-        bool dischargeEnabled,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await ConnectForCommandAsync(discovered, cancellationToken);
-            // A successful read establishes the working TDT header before any write.
-            var before = await ReadBatteryAsync(cancellationToken);
-            OnDiagnostic($"MOS before: charge={before.ChargeMosEnabled}, discharge={before.DischargeMosEnabled}");
-            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
-            await Task.Delay(250, cancellationToken);
-            var reading = await ReadBatteryAsync(cancellationToken);
-            for (var attempt = 1; attempt <= 3; attempt++)
-            {
-                var matches = reading.ChargeMosEnabled == chargeEnabled && reading.DischargeMosEnabled == dischargeEnabled;
-                OnDiagnostic($"MOS readback {attempt}/3: charge={reading.ChargeMosEnabled}, discharge={reading.DischargeMosEnabled}, matches={matches}");
-                if (matches || attempt == 3)
-                {
-                    break;
-                }
-                await Task.Delay(500, cancellationToken);
-                reading = await ReadBatteryAsync(cancellationToken);
-            }
-            return new WattCycleMosControlResult(
-                reading,
-                reading.ChargeMosEnabled == chargeEnabled,
-                reading.DischargeMosEnabled == dischargeEnabled);
-        }
-        finally
-        {
-            await CleanupConnectionAsync();
-        }
-    }
 
     private async Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken)
     {
@@ -328,254 +240,11 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
     }
 
-    private async Task<WattCycleBatteryReading> ReadBatteryAsync(CancellationToken cancellationToken)
-    {
-        if (_protocolKind == BmsProtocolKind.Tdt)
-        {
-            var statusFrame = await SendTdtReadCommandAsync(TdtProtocol.StatusCommand, cancellationToken);
-            var protectionFrame = await SendTdtReadCommandAsync(TdtProtocol.ProtectionCommand, cancellationToken);
-            OnDiagnostic(TdtProtocol.DescribeStatusFields(statusFrame, protectionFrame));
-            if (TdtProtocol.TryBuildReading(statusFrame, protectionFrame, out var reading))
-            {
-                return reading;
-            }
 
-            throw new InvalidOperationException($"Could not decode TDT BMS info: status={ToHexFrame(statusFrame)}, protection={ToHexFrame(protectionFrame)}");
-        }
 
-        var basicFrame = await SendReadCommandAsync(WattCycleBluetoothConstants.BasicInfoRegister, cancellationToken);
-        if (!JbdProtocol.TryParseBasicInfo(basicFrame, out var basic))
-        {
-            throw new InvalidOperationException($"Could not decode basic BMS info: {ToHexFrame(basicFrame)}");
-        }
 
-        var cellFrame = await SendReadCommandAsync(WattCycleBluetoothConstants.CellVoltagesRegister, cancellationToken);
-        if (!JbdProtocol.TryParseCellVoltages(cellFrame, out var cellVoltages))
-        {
-            OnDiagnostic($"Could not decode cell voltages: {ToHexFrame(cellFrame)}");
-            cellVoltages = Array.Empty<double>();
-        }
 
-        return new WattCycleBatteryReading(
-            DateTimeOffset.Now,
-            basic.PackVoltage,
-            basic.Current,
-            basic.RemainingCapacityAh,
-            basic.NominalCapacityAh,
-            basic.StateOfChargePercent,
-            basic.CycleCount,
-            basic.ChargeMosEnabled,
-            basic.DischargeMosEnabled,
-            cellVoltages,
-            basic.TemperaturesCelsius,
-            basic.ProtectionStatus);
-    }
 
-    private async Task<TdtFrame> SendTdtReadCommandAsync(byte command, CancellationToken cancellationToken)
-    {
-        if (_write is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        foreach (var commandHead in new byte[] { 0x1e, 0x7e })
-        {
-            var completion = new TaskCompletionSource<TdtFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pendingTdtCommand = new PendingTdtCommand(command, completion);
-
-            using var writer = new DataWriter();
-            var frame = TdtProtocol.BuildReadCommand(command, commandHead);
-            writer.WriteBytes(frame);
-            var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.WriteWithoutResponse)
-                ? GattWriteOption.WriteWithoutResponse
-                : GattWriteOption.WriteWithResponse;
-            var status = await BluetoothReadAttempt.AwaitNativeAsync(() => _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(), cancellationToken);
-            OnDiagnostic($"TDT read command 0x{command:X2} write ({option}, head=0x{commandHead:X2}): {status}, frame={Convert.ToHexString(frame)}");
-            if (status != GattCommunicationStatus.Success)
-            {
-                _pendingTdtCommand = null;
-                continue;
-            }
-
-            try
-            {
-                var response = await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-                if (response.Function != TdtProtocol.ReadFunction)
-                {
-                    throw new InvalidOperationException($"TDT read rejected: command=0x{command:X2}, function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}");
-                }
-                _tdtCommandHead = commandHead;
-                return response;
-            }
-            catch (TimeoutException)
-            {
-                OnDiagnostic($"TDT read command 0x{command:X2} timed out with head=0x{commandHead:X2}.");
-            }
-            finally
-            {
-                if (_pendingTdtCommand?.Command == command)
-                {
-                    _pendingTdtCommand = null;
-                }
-            }
-        }
-
-        throw new TimeoutException($"TDT read command 0x{command:X2} timed out.");
-    }
-
-    private async Task<JbdFrame> SendReadCommandAsync(byte register, CancellationToken cancellationToken)
-    {
-        if (_write is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommand = new PendingCommand(register, completion);
-
-        using var writer = new DataWriter();
-        var command = JbdProtocol.BuildReadCommand(register);
-        writer.WriteBytes(command);
-        var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
-            ? GattWriteOption.WriteWithResponse
-            : GattWriteOption.WriteWithoutResponse;
-        var status = await BluetoothReadAttempt.AwaitNativeAsync(() => _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(), cancellationToken);
-        OnDiagnostic($"Read register 0x{register:X2} write ({option}): {status}, frame={Convert.ToHexString(command)}");
-        if (status != GattCommunicationStatus.Success)
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Read register 0x{register:X2} write failed: {status}");
-        }
-
-        try
-        {
-            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        }
-        catch (TimeoutException)
-        {
-            var readFrame = await TryReadNotifyCharacteristicAsync(register, cancellationToken);
-            if (readFrame is not null)
-            {
-                return readFrame;
-            }
-
-            throw;
-        }
-        finally
-        {
-            if (_pendingCommand?.Register == register)
-            {
-                _pendingCommand = null;
-            }
-        }
-    }
-
-    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
-    {
-        if (_protocolKind == BmsProtocolKind.Tdt)
-        {
-            OnDiagnostic($"Sending TDT MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, head=0x{_tdtCommandHead:X2}");
-            await SendTdtMosSwitchAsync(chargeSwitch: true, enabled: chargeEnabled, cancellationToken);
-            await SendTdtMosSwitchAsync(chargeSwitch: false, enabled: dischargeEnabled, cancellationToken);
-            return;
-        }
-
-        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
-        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
-        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
-    }
-
-    private async Task SendTdtMosSwitchAsync(bool chargeSwitch, bool enabled, CancellationToken cancellationToken)
-    {
-        var command = chargeSwitch ? TdtProtocol.ChargeSwitchCommand : TdtProtocol.DischargeSwitchCommand;
-        var frame = TdtProtocol.BuildMosSwitchCommand(chargeSwitch, enabled, _tdtCommandHead);
-        var completion = new TaskCompletionSource<TdtFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new PendingTdtCommand(command, completion, TdtProtocol.WriteFunction);
-        _pendingTdtCommand = pending;
-        try
-        {
-            if (_write is null)
-            {
-                throw new InvalidOperationException("Write characteristic is not connected.");
-            }
-            using var writer = new DataWriter();
-            writer.WriteBytes(frame);
-            var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.WriteWithoutResponse)
-                ? GattWriteOption.WriteWithoutResponse : GattWriteOption.WriteWithResponse;
-            var status = await BluetoothReadAttempt.AwaitNativeAsync(() => _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(), cancellationToken);
-            OnDiagnostic($"TDT switch 0x{command:X2} enabled={enabled} write ({option}): {status}, frame={Convert.ToHexString(frame)}");
-            if (status != GattCommunicationStatus.Success)
-            {
-                throw new InvalidOperationException($"TDT switch write failed: {status}");
-            }
-            TdtFrame response;
-            try
-            {
-                response = await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-            }
-            catch (TimeoutException)
-            {
-                // Do not retry a write with another header: it may already have applied.
-                OnDiagnostic($"TDT switch 0x{command:X2}: no acknowledgement; outcome unknown until readback. No write retry.");
-                return;
-            }
-            OnDiagnostic($"TDT switch response: command=0x{response.Command:X2}, function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}");
-            if (!TdtProtocol.IsSuccessfulWriteResponse(response))
-            {
-                throw new InvalidOperationException($"TDT switch 0x{command:X2} rejected or unexpected acknowledgement: function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}. Earlier switch changes may have applied.");
-            }
-            OnDiagnostic($"TDT switch 0x{command:X2} acknowledged; verifying state after both writes.");
-        }
-        finally
-        {
-            if (ReferenceEquals(_pendingTdtCommand, pending))
-            {
-                _pendingTdtCommand = null;
-            }
-        }
-    }
-
-    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
-    {
-        if (_write is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommand = new PendingCommand(register, completion);
-
-        using var writer = new DataWriter();
-        var command = JbdProtocol.BuildWriteCommand(register, payload);
-        writer.WriteBytes(command);
-        var option = _write.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
-            ? GattWriteOption.WriteWithResponse
-            : GattWriteOption.WriteWithoutResponse;
-        var status = await BluetoothReadAttempt.AwaitNativeAsync(() => _write.WriteValueAsync(writer.DetachBuffer(), option).AsTask(), cancellationToken);
-        OnDiagnostic($"Write register 0x{register:X2} ({option}): {status}, frame={Convert.ToHexString(command)}");
-        if (status != GattCommunicationStatus.Success)
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
-        }
-
-        try
-        {
-            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        }
-        catch (TimeoutException ex)
-        {
-            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
-            return new JbdFrame(register, 0xff, Array.Empty<byte>());
-        }
-        finally
-        {
-            if (_pendingCommand?.Register == register)
-            {
-                _pendingCommand = null;
-            }
-        }
-    }
 
     private async Task<GattCharacteristic?> FindCharacteristicAsync(GattDeviceService service, Guid uuid, string name, CancellationToken cancellationToken, bool optional = false)
     {
@@ -602,6 +271,18 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
 
         return null;
+    }
+
+    private async Task WriteCommandAsync(byte[] bytes, bool preferWithoutResponse, CancellationToken cancellationToken)
+    {
+        var characteristic = _write ?? throw new IOException("Write characteristic is not connected.");
+        using var writer = new DataWriter();
+        writer.WriteBytes(bytes);
+        var option = preferWithoutResponse && characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.WriteWithoutResponse)
+            || !characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
+            ? GattWriteOption.WriteWithoutResponse : GattWriteOption.WriteWithResponse;
+        var status = await BluetoothReadAttempt.AwaitNativeAsync(() => characteristic.WriteValueAsync(writer.DetachBuffer(), option).AsTask(), cancellationToken);
+        if (status != GattCommunicationStatus.Success) throw new IOException($"BMS command write failed: {status}");
     }
 
     private async Task UnlockTdtAsync(CancellationToken cancellationToken)
@@ -773,35 +454,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         // Ignore a notification queued before the old connection was released.
         if (!ReferenceEquals(sender, _notify)) return;
         var bytes = ReadBytes(args.CharacteristicValue);
-        OnDiagnostic($"Notify: {Convert.ToHexString(bytes)}");
-        foreach (var rawFrame in _frameReader.Add(bytes))
-        {
-            if (!JbdProtocol.TryParseFrame(rawFrame, out var frame))
-            {
-                OnDiagnostic($"Invalid BMS frame: {Convert.ToHexString(rawFrame)}");
-                continue;
-            }
-
-            if (_pendingCommand?.Register == frame.Register)
-            {
-                _pendingCommand.Completion.TrySetResult(frame);
-            }
-        }
-
-        foreach (var rawFrame in _tdtFrameReader.Add(bytes))
-        {
-            if (!TdtProtocol.TryParseFrame(rawFrame, out var frame))
-            {
-                OnDiagnostic($"Invalid TDT frame: {Convert.ToHexString(rawFrame)}");
-                continue;
-            }
-
-            if (_pendingTdtCommand is { } pending && pending.Command == frame.Command &&
-                (frame.Function == pending.Function || frame.Function == (pending.Function | 0x80)))
-            {
-                pending.Completion.TrySetResult(frame);
-            }
-        }
+        HandleNotification(bytes);
     }
 
     private void OnDeviceConnectionStatusChanged(BluetoothLEDevice sender, object args)
@@ -870,10 +523,6 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         return bytes;
     }
 
-    private static bool LooksLikeBatteryName(string? name) =>
-        !string.IsNullOrWhiteSpace(name) &&
-        (name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase) ||
-         name.StartsWith("WT", StringComparison.OrdinalIgnoreCase));
 
     private WattCycleDeviceAdvertisement? SelectFallbackScanCandidate()
     {
@@ -917,27 +566,13 @@ public sealed class WattCycleBtClient : IAsyncDisposable
             .Take(maxBatteries)
             .ToArray();
 
-    private static TimeSpan GetReconnectDelay(int attempt)
-    {
-        var multiplier = Math.Pow(2, Math.Max(0, Math.Min(attempt - 1, 4)));
-        var seconds = Math.Min(
-            WattCycleBluetoothConstants.AutoReconnectMaxDelay.TotalSeconds,
-            WattCycleBluetoothConstants.AutoReconnectInitialDelay.TotalSeconds * multiplier);
-        return TimeSpan.FromSeconds(seconds);
-    }
 
-    private static string ToHexFrame(JbdFrame frame) => $"register=0x{frame.Register:X2}, status=0x{frame.Status:X2}, payload={Convert.ToHexString(frame.Payload)}";
 
-    private static string ToHexFrame(TdtFrame frame) => $"command=0x{frame.Command:X2}, payload={Convert.ToHexString(frame.Payload)}";
 
     private static string FormatProtocolError(byte? protocolError) => protocolError.HasValue ? $"0x{protocolError.Value:X2}" : "none";
 
-    private void OnDiagnostic(string message) => DiagnosticMessage?.Invoke(this, message);
 
-    private void OnInfo(string message) => InfoMessage?.Invoke(this, message);
 
-    private sealed record PendingCommand(byte Register, TaskCompletionSource<JbdFrame> Completion);
-    private sealed record PendingTdtCommand(byte Command, TaskCompletionSource<TdtFrame> Completion, byte Function = TdtProtocol.ReadFunction);
 
     private sealed record ResolvedWindowsProtocol(
         BmsProtocolKind Kind,
@@ -957,22 +592,16 @@ using Java.Util;
 namespace WattCycle.Core;
 
 #pragma warning disable CA1416, CA1422
-public sealed class WattCycleBtClient : IAsyncDisposable
+public sealed partial class WattCycleBtClient : IAsyncDisposable
 {
     private static readonly UUID ClientCharacteristicConfigurationUuid = UUID.FromString("00002902-0000-1000-8000-00805f9b34fb")!;
 
-    private JbdFrameReader _frameReader = new();
-    private TdtFrameReader _tdtFrameReader = new();
     private readonly ConcurrentDictionary<ulong, WattCycleScanCandidate> _scanCandidates = new();
     private BluetoothGatt? _gatt;
     private WattCycleGattCallback? _gattCallback;
     private BluetoothGattCharacteristic? _notify;
     private BluetoothGattCharacteristic? _write;
     private BluetoothGattCharacteristic? _config;
-    private PendingCommand? _pendingCommand;
-    private PendingTdtCommand? _pendingTdtCommand;
-    private byte _tdtCommandHead = 0x1e;
-    private BmsProtocolKind _protocolKind = BmsProtocolKind.Jbd;
 
     public event EventHandler<string>? DiagnosticMessage;
     public event EventHandler<string>? InfoMessage;
@@ -1109,90 +738,8 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
     }
 
-    public async Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        var reconnectAttempt = 0;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (reconnectAttempt > 0)
-                {
-                    OnDiagnostic($"Reconnect attempt {reconnectAttempt} to {discovered.DisplayName}...");
-                }
 
-                await ConnectAndPollOnceAsync(discovered, cancellationToken);
-            }
-            catch (System.OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException)
-            {
-                OnInfo($"WattCycle BT poll failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-            }
-            finally
-            {
-                await CleanupConnectionAsync();
-            }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            reconnectAttempt++;
-            var delay = GetReconnectDelay(reconnectAttempt);
-            ConnectionStatusChanged?.Invoke(this, "Reconnecting");
-            OnDiagnostic($"Reconnecting to {discovered.DisplayName} in {delay.TotalSeconds:F1}s...");
-            await Task.Delay(delay, cancellationToken);
-        }
-    }
-
-    public Task<WattCycleBatteryReading> ReadOnceAsync(WattCycleDeviceAdvertisement discovered,
-        CancellationToken cancellationToken = default) => BluetoothReadAttempt.RunAsync(
-            () => ConnectForCommandAsync(discovered, cancellationToken),
-            () => ReadBatteryAsync(cancellationToken),
-            async () =>
-            {
-                OnDiagnostic("Read attempt cleanup started.");
-                await CleanupConnectionAsync();
-                OnDiagnostic("Read attempt cleanup completed.");
-            }, cancellationToken);
-    public async ValueTask DisposeAsync() => await CleanupConnectionAsync();
-
-    public async Task<WattCycleMosControlResult> SetMosAsync(
-        WattCycleDeviceAdvertisement discovered,
-        bool chargeEnabled,
-        bool dischargeEnabled,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await ConnectForCommandAsync(discovered, cancellationToken);
-            // A successful read establishes the working TDT header before any write.
-            var before = await ReadBatteryAsync(cancellationToken);
-            OnDiagnostic($"MOS before: charge={before.ChargeMosEnabled}, discharge={before.DischargeMosEnabled}");
-            await SendMosControlAsync(chargeEnabled, dischargeEnabled, cancellationToken);
-            await Task.Delay(250, cancellationToken);
-            var reading = await ReadBatteryAsync(cancellationToken);
-            for (var attempt = 1; attempt <= 3; attempt++)
-            {
-                var matches = reading.ChargeMosEnabled == chargeEnabled && reading.DischargeMosEnabled == dischargeEnabled;
-                OnDiagnostic($"MOS readback {attempt}/3: charge={reading.ChargeMosEnabled}, discharge={reading.DischargeMosEnabled}, matches={matches}");
-                if (matches || attempt == 3)
-                {
-                    break;
-                }
-                await Task.Delay(500, cancellationToken);
-                reading = await ReadBatteryAsync(cancellationToken);
-            }
-            return new WattCycleMosControlResult(
-                reading,
-                reading.ChargeMosEnabled == chargeEnabled,
-                reading.DischargeMosEnabled == dischargeEnabled);
-        }
-        finally
-        {
-            await CleanupConnectionAsync();
-        }
-    }
 
     private Task ConnectForCommandAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken) =>
         ConnectAndroidAsync(discovered, cancellationToken);
@@ -1272,269 +819,11 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
     }
 
-    private async Task<WattCycleBatteryReading> ReadBatteryAsync(CancellationToken cancellationToken)
-    {
-        if (_protocolKind == BmsProtocolKind.Tdt)
-        {
-            var statusFrame = await SendTdtReadCommandAsync(TdtProtocol.StatusCommand, cancellationToken);
-            var protectionFrame = await SendTdtReadCommandAsync(TdtProtocol.ProtectionCommand, cancellationToken);
-            OnDiagnostic(TdtProtocol.DescribeStatusFields(statusFrame, protectionFrame));
-            if (TdtProtocol.TryBuildReading(statusFrame, protectionFrame, out var reading))
-            {
-                return reading;
-            }
 
-            throw new InvalidOperationException($"Could not decode TDT BMS info: status={ToHexFrame(statusFrame)}, protection={ToHexFrame(protectionFrame)}");
-        }
 
-        var basicFrame = await SendReadCommandAsync(WattCycleBluetoothConstants.BasicInfoRegister, cancellationToken);
-        if (!JbdProtocol.TryParseBasicInfo(basicFrame, out var basic))
-        {
-            throw new InvalidOperationException($"Could not decode basic BMS info: {ToHexFrame(basicFrame)}");
-        }
 
-        var cellFrame = await SendReadCommandAsync(WattCycleBluetoothConstants.CellVoltagesRegister, cancellationToken);
-        if (!JbdProtocol.TryParseCellVoltages(cellFrame, out var cellVoltages))
-        {
-            OnDiagnostic($"Could not decode cell voltages: {ToHexFrame(cellFrame)}");
-            cellVoltages = Array.Empty<double>();
-        }
 
-        return new WattCycleBatteryReading(
-            DateTimeOffset.Now,
-            basic.PackVoltage,
-            basic.Current,
-            basic.RemainingCapacityAh,
-            basic.NominalCapacityAh,
-            basic.StateOfChargePercent,
-            basic.CycleCount,
-            basic.ChargeMosEnabled,
-            basic.DischargeMosEnabled,
-            cellVoltages,
-            basic.TemperaturesCelsius,
-            basic.ProtectionStatus);
-    }
 
-    private async Task<TdtFrame> SendTdtReadCommandAsync(byte command, CancellationToken cancellationToken)
-    {
-        if (_gatt is null || _write is null || _gattCallback is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        foreach (var commandHead in new byte[] { 0x1e, 0x7e })
-        {
-            var completion = new TaskCompletionSource<TdtFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pendingTdtCommand = new PendingTdtCommand(command, completion);
-            var frame = TdtProtocol.BuildReadCommand(command, commandHead);
-            _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
-            _write.SetValue(frame);
-
-            var writeCompletion = _gattCallback.BeginCharacteristicWrite();
-            if (!_gatt.WriteCharacteristic(_write))
-            {
-                _pendingTdtCommand = null;
-                throw new IOException($"TDT read command 0x{command:X2} write failed to start.");
-            }
-
-            var status = await writeCompletion.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-            OnDiagnostic($"TDT read command 0x{command:X2} write ({_write.WriteType}, head=0x{commandHead:X2}): {status}, frame={Convert.ToHexString(frame)}");
-            if (status != GattStatus.Success)
-            {
-                _pendingTdtCommand = null;
-                throw new IOException($"TDT read command 0x{command:X2} write failed: {status}");
-            }
-
-            try
-            {
-                var response = await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-                if (response.Function != TdtProtocol.ReadFunction)
-                {
-                    throw new InvalidOperationException($"TDT read rejected: command=0x{command:X2}, function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}");
-                }
-                _tdtCommandHead = commandHead;
-                return response;
-            }
-            catch (TimeoutException)
-            {
-                OnDiagnostic($"TDT read command 0x{command:X2} timed out with head=0x{commandHead:X2}.");
-            }
-            finally
-            {
-                if (_pendingTdtCommand?.Command == command)
-                {
-                    _pendingTdtCommand = null;
-                }
-            }
-        }
-
-        throw new TimeoutException($"TDT read command 0x{command:X2} timed out.");
-    }
-
-    private async Task<JbdFrame> SendReadCommandAsync(byte register, CancellationToken cancellationToken)
-    {
-        if (_gatt is null || _write is null || _gattCallback is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommand = new PendingCommand(register, completion);
-        var command = JbdProtocol.BuildReadCommand(register);
-        _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
-        _write.SetValue(command);
-
-        var writeCompletion = _gattCallback.BeginCharacteristicWrite();
-        if (!_gatt.WriteCharacteristic(_write))
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Read register 0x{register:X2} write failed to start.");
-        }
-
-        var status = await writeCompletion.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        OnDiagnostic($"Read register 0x{register:X2} write ({_write.WriteType}): {status}, frame={Convert.ToHexString(command)}");
-        if (status != GattStatus.Success)
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Read register 0x{register:X2} write failed: {status}");
-        }
-
-        try
-        {
-            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        }
-        catch (TimeoutException)
-        {
-            var readFrame = await TryReadNotifyCharacteristicAsync(register, cancellationToken);
-            if (readFrame is not null)
-            {
-                return readFrame;
-            }
-
-            throw;
-        }
-        finally
-        {
-            if (_pendingCommand?.Register == register)
-            {
-                _pendingCommand = null;
-            }
-        }
-    }
-
-    private async Task SendMosControlAsync(bool chargeEnabled, bool dischargeEnabled, CancellationToken cancellationToken)
-    {
-        if (_protocolKind == BmsProtocolKind.Tdt)
-        {
-            OnDiagnostic($"Sending TDT MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, head=0x{_tdtCommandHead:X2}");
-            await SendTdtMosSwitchAsync(chargeSwitch: true, enabled: chargeEnabled, cancellationToken);
-            await SendTdtMosSwitchAsync(chargeSwitch: false, enabled: dischargeEnabled, cancellationToken);
-            return;
-        }
-
-        var mosMask = (byte)((chargeEnabled ? 0x01 : 0x00) | (dischargeEnabled ? 0x02 : 0x00));
-        OnDiagnostic($"Sending MOS control: charge={chargeEnabled}, discharge={dischargeEnabled}, mask=0x{mosMask:X2}, protocol={_protocolKind}");
-        await SendJbdWriteCommandAsync(WattCycleBluetoothConstants.MosControlRegister, [0x00, mosMask], cancellationToken);
-    }
-
-    private async Task SendTdtMosSwitchAsync(bool chargeSwitch, bool enabled, CancellationToken cancellationToken)
-    {
-        var command = chargeSwitch ? TdtProtocol.ChargeSwitchCommand : TdtProtocol.DischargeSwitchCommand;
-        var frame = TdtProtocol.BuildMosSwitchCommand(chargeSwitch, enabled, _tdtCommandHead);
-        var completion = new TaskCompletionSource<TdtFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = new PendingTdtCommand(command, completion, TdtProtocol.WriteFunction);
-        _pendingTdtCommand = pending;
-        try
-        {
-            if (_gatt is null || _write is null || _gattCallback is null)
-            {
-                throw new InvalidOperationException("Write characteristic is not connected.");
-            }
-            _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
-            _write.SetValue(frame);
-            var writeCompletion = _gattCallback.BeginCharacteristicWrite();
-            OnDiagnostic($"TDT switch 0x{command:X2} enabled={enabled} write ({_write.WriteType}), frame={Convert.ToHexString(frame)}");
-            if (!_gatt.WriteCharacteristic(_write))
-            {
-                throw new InvalidOperationException("TDT switch write failed to start.");
-            }
-            var status = await writeCompletion.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-            if (status != GattStatus.Success)
-            {
-                throw new InvalidOperationException($"TDT switch write failed: {status}");
-            }
-            TdtFrame response;
-            try
-            {
-                response = await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-            }
-            catch (TimeoutException)
-            {
-                // Do not retry a write with another header: it may already have applied.
-                OnDiagnostic($"TDT switch 0x{command:X2}: no acknowledgement; outcome unknown until readback. No write retry.");
-                return;
-            }
-            OnDiagnostic($"TDT switch response: command=0x{response.Command:X2}, function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}");
-            if (!TdtProtocol.IsSuccessfulWriteResponse(response))
-            {
-                throw new InvalidOperationException($"TDT switch 0x{command:X2} rejected or unexpected acknowledgement: function=0x{response.Function:X2}, payload={Convert.ToHexString(response.Payload)}. Earlier switch changes may have applied.");
-            }
-            OnDiagnostic($"TDT switch 0x{command:X2} acknowledged; verifying state after both writes.");
-        }
-        finally
-        {
-            if (ReferenceEquals(_pendingTdtCommand, pending))
-            {
-                _pendingTdtCommand = null;
-            }
-        }
-    }
-
-    private async Task<JbdFrame> SendJbdWriteCommandAsync(byte register, byte[] payload, CancellationToken cancellationToken)
-    {
-        if (_gatt is null || _write is null || _gattCallback is null)
-        {
-            throw new InvalidOperationException("Write characteristic is not connected.");
-        }
-
-        var completion = new TaskCompletionSource<JbdFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pendingCommand = new PendingCommand(register, completion);
-        var command = JbdProtocol.BuildWriteCommand(register, payload);
-        _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
-        _write.SetValue(command);
-
-        var writeCompletion = _gattCallback.BeginCharacteristicWrite();
-        if (!_gatt.WriteCharacteristic(_write))
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Write register 0x{register:X2} failed to start.");
-        }
-
-        var status = await writeCompletion.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        OnDiagnostic($"Write register 0x{register:X2} ({_write.WriteType}): {status}, frame={Convert.ToHexString(command)}");
-        if (status != GattStatus.Success)
-        {
-            _pendingCommand = null;
-            throw new InvalidOperationException($"Write register 0x{register:X2} failed: {status}");
-        }
-
-        try
-        {
-            return await completion.Task.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
-        }
-        catch (TimeoutException ex)
-        {
-            OnDiagnostic($"Write register 0x{register:X2} did not return an acknowledgement: {ex.Message}");
-            return new JbdFrame(register, 0xff, Array.Empty<byte>());
-        }
-        finally
-        {
-            if (_pendingCommand?.Register == register)
-            {
-                _pendingCommand = null;
-            }
-        }
-    }
 
     private BluetoothGattCharacteristic? FindCharacteristic(BluetoothGattService service, Guid uuid, string name, bool optional = false)
     {
@@ -1556,6 +845,17 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
 
         return null;
+    }
+
+    private async Task WriteCommandAsync(byte[] bytes, bool preferWithoutResponse, CancellationToken cancellationToken)
+    {
+        if (_gatt is null || _write is null || _gattCallback is null) throw new IOException("Write characteristic is not connected.");
+        _write.WriteType = _write.Properties.HasFlag(GattProperty.WriteNoResponse) ? GattWriteType.NoResponse : GattWriteType.Default;
+        _write.SetValue(bytes);
+        var completion = _gattCallback.BeginCharacteristicWrite();
+        if (!_gatt.WriteCharacteristic(_write)) throw new IOException("BMS command write failed to start.");
+        var status = await completion.WaitAsync(WattCycleBluetoothConstants.CommandTimeout, cancellationToken);
+        if (status != GattStatus.Success) throw new IOException($"BMS command write failed: {status}");
     }
 
     private async Task UnlockTdtAsync(CancellationToken cancellationToken)
@@ -1721,39 +1021,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         }
     }
 
-    private void HandleCharacteristicChanged(BluetoothGattCharacteristic characteristic, byte[] bytes)
-    {
-        _ = characteristic;
-        OnDiagnostic($"Notify: {Convert.ToHexString(bytes)}");
-        foreach (var rawFrame in _frameReader.Add(bytes))
-        {
-            if (!JbdProtocol.TryParseFrame(rawFrame, out var frame))
-            {
-                OnDiagnostic($"Invalid BMS frame: {Convert.ToHexString(rawFrame)}");
-                continue;
-            }
-
-            if (_pendingCommand?.Register == frame.Register)
-            {
-                _pendingCommand.Completion.TrySetResult(frame);
-            }
-        }
-
-        foreach (var rawFrame in _tdtFrameReader.Add(bytes))
-        {
-            if (!TdtProtocol.TryParseFrame(rawFrame, out var frame))
-            {
-                OnDiagnostic($"Invalid TDT frame: {Convert.ToHexString(rawFrame)}");
-                continue;
-            }
-
-            if (_pendingTdtCommand is { } pending && pending.Command == frame.Command &&
-                    (frame.Function == pending.Function || frame.Function == (pending.Function | 0x80)))
-            {
-                pending.Completion.TrySetResult(frame);
-            }
-        }
-    }
+    private void HandleCharacteristicChanged(BluetoothGattCharacteristic characteristic, byte[] bytes) => HandleNotification(bytes);
 
     private void HandleAndroidConnectionFailure(Exception error)
     {
@@ -1821,10 +1089,6 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         return manager?.Adapter;
     }
 
-    private static bool LooksLikeBatteryName(string? name) =>
-        !string.IsNullOrWhiteSpace(name) &&
-        (name.StartsWith("XDZN", StringComparison.OrdinalIgnoreCase) ||
-         name.StartsWith("WT", StringComparison.OrdinalIgnoreCase));
 
     private WattCycleDeviceAdvertisement? SelectFallbackScanCandidate()
     {
@@ -1881,25 +1145,11 @@ public sealed class WattCycleBtClient : IAsyncDisposable
         return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
     }
 
-    private static TimeSpan GetReconnectDelay(int attempt)
-    {
-        var multiplier = Math.Pow(2, Math.Max(0, Math.Min(attempt - 1, 4)));
-        var seconds = Math.Min(
-            WattCycleBluetoothConstants.AutoReconnectMaxDelay.TotalSeconds,
-            WattCycleBluetoothConstants.AutoReconnectInitialDelay.TotalSeconds * multiplier);
-        return TimeSpan.FromSeconds(seconds);
-    }
 
-    private static string ToHexFrame(JbdFrame frame) => $"register=0x{frame.Register:X2}, status=0x{frame.Status:X2}, payload={Convert.ToHexString(frame.Payload)}";
 
-    private static string ToHexFrame(TdtFrame frame) => $"command=0x{frame.Command:X2}, payload={Convert.ToHexString(frame.Payload)}";
 
-    private void OnDiagnostic(string message) => DiagnosticMessage?.Invoke(this, message);
 
-    private void OnInfo(string message) => InfoMessage?.Invoke(this, message);
 
-    private sealed record PendingCommand(byte Register, TaskCompletionSource<JbdFrame> Completion);
-    private sealed record PendingTdtCommand(byte Command, TaskCompletionSource<TdtFrame> Completion, byte Function = TdtProtocol.ReadFunction);
 
     private sealed record ResolvedAndroidProtocol(
         BmsProtocolKind Kind,
@@ -2043,7 +1293,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
     private sealed record CharacteristicReadResult(GattStatus Status, byte[] Value);
 }
 #pragma warning restore CA1416, CA1422
-#else
+#elif !IOS && !MACCATALYST
 namespace WattCycle.Core;
 
 #pragma warning disable CS0067
@@ -2058,7 +1308,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 	{
 		_ = timeout;
 		_ = cancellationToken;
-		InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows and Android only.");
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
 		return Task.FromResult<WattCycleDeviceAdvertisement?>(null);
 	}
 
@@ -2072,7 +1322,7 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 		_ = timeout;
 		_ = batteryDiscovered;
 		_ = cancellationToken;
-		InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows and Android only.");
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth scanning is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
 		return Task.FromResult<IReadOnlyList<WattCycleDeviceAdvertisement>>(Array.Empty<WattCycleDeviceAdvertisement>());
 	}
 
@@ -2086,18 +1336,18 @@ public sealed class WattCycleBtClient : IAsyncDisposable
 		_ = chargeEnabled;
 		_ = dischargeEnabled;
 		_ = cancellationToken;
-		InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows and Android only.");
-		return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows and Android only."));
+		InfoMessage?.Invoke(this, "WattCycle MOS control is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
+		return Task.FromException<WattCycleMosControlResult>(new PlatformNotSupportedException("WattCycle MOS control is currently implemented for Windows, Android, iOS and Mac Catalyst only."));
 	}
 
 	public Task<WattCycleBatteryReading> ReadOnceAsync(WattCycleDeviceAdvertisement discovered,
 		CancellationToken cancellationToken = default) => Task.FromException<WattCycleBatteryReading>(
-			new PlatformNotSupportedException("WattCycle Bluetooth reads are implemented for Windows and Android only."));
+			new PlatformNotSupportedException("WattCycle Bluetooth reads are implemented for Windows, Android, iOS and Mac Catalyst only."));
 	public Task ConnectAndPollAsync(WattCycleDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
 	{
 		_ = discovered;
 		_ = cancellationToken;
-		InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows and Android only.");
+		InfoMessage?.Invoke(this, "WattCycle Bluetooth polling is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
 		return Task.CompletedTask;
 	}
 

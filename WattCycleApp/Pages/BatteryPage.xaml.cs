@@ -87,7 +87,7 @@ public partial class BatteryPage : ContentPage
 		}
 
 		// Capture the selected battery before awaiting the dialog or stopping discovery.
-		var advertisement = new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false);
+		var advertisement = new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false) { PeripheralIdentifier = row.PeripheralIdentifier };
 		_batteryControlInProgress = true;
 		var monitoringPaused = false;
 		BatteryControlLog? controlLog = null;
@@ -404,7 +404,7 @@ public partial class BatteryPage : ContentPage
 			.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
 			.ThenBy(row => row.BluetoothAddress)
 			.Take(batteryLimit)
-			.Select(row => new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false))
+			.Select(row => new WattCycleDeviceAdvertisement(row.BluetoothAddress, row.Name, 0, false) { PeripheralIdentifier = row.PeripheralIdentifier })
 			.ToArray();
 
 	private static IReadOnlyList<WattCycleDeviceAdvertisement> MergeAdvertisements(
@@ -433,14 +433,17 @@ public partial class BatteryPage : ContentPage
 		if (row is not null)
 		{
 			row.Name = advertisement.DisplayName;
+			row.PeripheralIdentifier = advertisement.PeripheralIdentifier;
 			return row;
 		}
 
-		row = Batteries.FirstOrDefault(item => item.Name.Equals(advertisement.DisplayName, StringComparison.OrdinalIgnoreCase));
+		row = Batteries.FirstOrDefault(item => item.Name.Equals(advertisement.DisplayName, StringComparison.OrdinalIgnoreCase)
+			&& (advertisement.PeripheralIdentifier is null || item.PeripheralIdentifier is null));
 		if (row is not null)
 		{
 			row.BluetoothAddress = advertisement.BluetoothAddress;
 			row.Name = advertisement.DisplayName;
+			row.PeripheralIdentifier = advertisement.PeripheralIdentifier;
 			return row;
 		}
 
@@ -462,12 +465,13 @@ public partial class BatteryPage : ContentPage
 		Batteries.Clear();
 		foreach (var entry in remembered.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
 		{
-			var parts = entry.Split('|', 2);
+			var parts = entry.Split('|', 3);
 			var address = ulong.TryParse(parts[0], out var parsed) ? parsed : 0;
-			var name = parts.Length == 2 ? parts[1] : parts[0];
+			var name = parts.Length >= 2 ? parts[1] : parts[0];
+			var identifier = parts.Length == 3 && Guid.TryParse(parts[2], out var uuid) ? (Guid?)uuid : null;
 			if (!string.IsNullOrWhiteSpace(name))
 			{
-				Batteries.Add(new BatteryRow(address, name));
+				Batteries.Add(new BatteryRow(address, name) { PeripheralIdentifier = identifier });
 			}
 		}
 
@@ -481,7 +485,7 @@ public partial class BatteryPage : ContentPage
 			.OrderBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
 			.ThenBy(row => row.BluetoothAddress)
 			.Take(BatteryMonitorSettings.BatteryLimit)
-			.Select(row => $"{row.BluetoothAddress}|{row.Name}");
+			.Select(row => $"{row.BluetoothAddress}|{row.Name}|{row.PeripheralIdentifier}");
 		Preferences.Set(RememberedBatteriesPreferenceKey, string.Join('\n', remembered));
 		Preferences.Set(BatteryMonitorSettings.BatteryCountPreferenceKey, BatteryMonitorSettings.BatteryLimit);
 	}
@@ -625,6 +629,7 @@ public partial class BatteryPage : ContentPage
 		public BatteryRow(WattCycleDeviceAdvertisement advertisement)
 			: this(advertisement.BluetoothAddress, advertisement.DisplayName)
 		{
+			PeripheralIdentifier = advertisement.PeripheralIdentifier;
 			Status = "Found";
 		}
 
@@ -635,6 +640,8 @@ public partial class BatteryPage : ContentPage
 		}
 
 		public event PropertyChangedEventHandler? PropertyChanged;
+
+		public Guid? PeripheralIdentifier { get; set; }
 
 		public ulong BluetoothAddress
 		{

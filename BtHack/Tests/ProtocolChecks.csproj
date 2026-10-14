@@ -4,9 +4,14 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <DefineConstants>$(DefineConstants);WATTCYCLE_PROTOCOL_TESTS</DefineConstants>
     <ProtocolSource Condition="'$(ProtocolSource)' == ''">$(MSBuildThisFileDirectory)..\..\WattCycle</ProtocolSource>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="$(ProtocolSource)\WattCycleBtClient.Protocol.cs" Link="WattCycleBtClient.Protocol.cs" />
+    <Compile Include="$(ProtocolSource)\WattCycleBluetoothConstants.cs" Link="WattCycleBluetoothConstants.cs" />
+    <Compile Include="$(ProtocolSource)\JbdProtocol.cs" Link="JbdProtocol.cs" />
+    <Compile Include="$(ProtocolSource)\JbdFrameReader.cs" Link="JbdFrameReader.cs" />
     <Compile Include="$(ProtocolSource)\TdtProtocol.cs" Link="TdtProtocol.cs" />
     <Compile Include="$(ProtocolSource)\GattSessionOperations.cs" Link="GattSessionOperations.cs" />
     <Compile Include="$(ProtocolSource)\BluetoothReadAttempt.cs" Link="BluetoothReadAttempt.cs" />
