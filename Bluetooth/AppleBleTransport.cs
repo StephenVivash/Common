@@ -85,7 +85,7 @@ public sealed class AppleBleTransport : IAsyncDisposable
             ThrowIfUnavailable();
             if (_discovered is not null) throw new InvalidOperationException("A scan is already active.");
             _discovered = discovered;
-            // Name-only BMS advertisements must remain visible.
+            // Name-only advertisements must remain visible.
             _central!.ScanForPeripherals((CBUUID[]?)null, new PeripheralScanningOptions { AllowDuplicatesKey = true });
         });
         try
@@ -109,7 +109,7 @@ public sealed class AppleBleTransport : IAsyncDisposable
             if (_peripheral is not null) throw new InvalidOperationException("A peripheral session is already active.");
             using var uuid = new NSUuid(identifier.ToString());
             _peripheral = _central!.RetrievePeripheralsWithIdentifiers([uuid]).FirstOrDefault()
-                ?? throw new IOException("Apple could not retrieve the battery. Scan for it again.");
+                ?? throw new IOException("Apple could not retrieve the Bluetooth peripheral. Scan for it again.");
             _peripheral.Delegate = _peripheralDelegate;
             _central.ConnectPeripheral(_peripheral);
         }, cancellationToken);

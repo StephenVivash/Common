@@ -10,10 +10,10 @@ acknowledgement callback that Apple does not deliver. Large writes are split at
 the peripheral's maximum write size. Canceled or timed-out native operations
 invalidate the session so delayed callbacks cannot complete a new operation.
 
-WattCycle references this library. A future Apple implementation in Muse can
-reference the same library, subscribe to its sensor characteristics, and use the
-existing Muse packet decoders. The transport has no battery or Muse protocol
-knowledge. Muse's current platform implementations remain in its own project.
+WattCycle and Muse reference this library. Muse subscribes to its sensor
+characteristics and uses the same packet decoders and EEG processing as its
+Windows/Android adapters. The transport has no battery or Muse protocol
+knowledge. See `../Muse/README.md` for Muse implementation and validation notes.
 
 # WattCycle Apple support
 

@@ -2,6 +2,7 @@
   <Project Path="BtHack/BtHack.csproj" />
   <Folder Name="/Tests/">
     <Project Path="BtHack/Tests/ProtocolChecks.csproj" />
+    <Project Path="Muse.Tests/Muse.ProtocolChecks.csproj" />
   </Folder>
   <Project Path="Bluetooth/Bluetooth.csproj" />
   <Project Path="Gui/Gui.csproj" />

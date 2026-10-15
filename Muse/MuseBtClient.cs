@@ -1,7 +1,4 @@
 #if WINDOWS
-using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Text;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
@@ -9,28 +6,13 @@ using Windows.Storage.Streams;
 
 namespace Muse.Core;
 
-public sealed class MuseBtClient : IAsyncDisposable
+public sealed partial class MuseBtClient : IAsyncDisposable
 {
-    private readonly ConcurrentDictionary<Guid, long> _notificationCounts = new();
-    private readonly ConcurrentDictionary<Guid, EegBandPowerTracker> _eegBandTrackers = new();
-    private readonly ConcurrentDictionary<Guid, MuseEegPacketStats> _eegPacketStats = new();
     private BluetoothLEDevice? _device;
     private GattCharacteristic? _control;
     private TaskCompletionSource? _connectionLost;
-
-    public event EventHandler<string>? DiagnosticMessage;
-
-    public event EventHandler<string>? InfoMessage;
-
-    public event EventHandler<string>? ConnectionStatusChanged;
-
-    public event EventHandler<MuseNotification>? NotificationReceived;
-
-    public event EventHandler<MuseEegPacketDiagnostic>? EegPacketDiagnostic;
-
-    public event EventHandler<MuseBandPowerDiagnostic>? BandPowerDiagnostic;
-
-    public event EventHandler<MuseBandPowerReading>? BandPowersCalculated;
+    private Task DisconnectedTask => _connectionLost!.Task;
+    private bool IsConnected => _device?.ConnectionStatus == BluetoothConnectionStatus.Connected;
 
     public async Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
@@ -80,46 +62,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         finally
         {
             watcher.Stop();
-        }
-    }
-
-    public async Task ConnectAndStreamAsync(MuseDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        var reconnectAttempt = 0;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (reconnectAttempt > 0)
-                {
-                    OnDiagnostic($"Reconnect attempt {reconnectAttempt} to {discovered.DisplayName}...");
-                }
-
-                await ConnectAndStreamOnceAsync(discovered, cancellationToken);
-            }
-            catch (System.OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or InvalidOperationException)
-            {
-                OnInfo($"Muse BT stream failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-            }
-            finally
-            {
-                await CleanupConnectionAsync(sendStopCommand: false);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-
-            reconnectAttempt++;
-            var delay = GetReconnectDelay(reconnectAttempt);
-            ConnectionStatusChanged?.Invoke(this, "Reconnecting");
-            OnDiagnostic($"Reconnecting to {discovered.DisplayName} in {delay.TotalSeconds:F1}s...");
-            await Task.Delay(delay, cancellationToken);
         }
     }
 
@@ -176,15 +118,7 @@ public sealed class MuseBtClient : IAsyncDisposable
             return;
         }
 
-        var bytes = Encoding.ASCII.GetBytes(command + "\n");
-        if (bytes.Length > byte.MaxValue)
-        {
-            throw new InvalidOperationException($"Control command too long: {command}");
-        }
-
-        var payload = new byte[bytes.Length + 1];
-        payload[0] = (byte)bytes.Length;
-        bytes.CopyTo(payload, 1);
+        var payload = EncodeControlCommand(command);
 
         var writeOption = _control.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Write)
             ? GattWriteOption.WriteWithResponse
@@ -200,69 +134,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
         {
             OnInfo($"Control write '{command}' ({writeOption}) failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        await CleanupConnectionAsync(sendStopCommand: true);
-    }
-
-    private async Task RunStreamingLoopAsync(CancellationToken cancellationToken)
-    {
-        OnDiagnostic("Streaming.");
-        try
-        {
-            var keepAliveTimer = Stopwatch.StartNew();
-            var lastNotificationTotal = TotalNotifications();
-            var lastNotificationProgress = DateTimeOffset.UtcNow;
-            var connectionLostTask = _connectionLost?.Task ?? Task.Delay(Timeout.InfiniteTimeSpan);
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var delayTask = Task.Delay(MuseBluetoothConstants.BandPowerPublishInterval, cancellationToken);
-                if (await Task.WhenAny(delayTask, connectionLostTask) == connectionLostTask)
-                {
-                    OnDiagnostic("Connection lost; leaving stream loop for reconnect.");
-                    break;
-                }
-
-                await delayTask;
-                PublishBandSummaries();
-
-                var notificationTotal = TotalNotifications();
-                if (notificationTotal > lastNotificationTotal)
-                {
-                    lastNotificationTotal = notificationTotal;
-                    lastNotificationProgress = DateTimeOffset.UtcNow;
-                }
-                else if (DateTimeOffset.UtcNow - lastNotificationProgress >= MuseBluetoothConstants.NotificationStallReconnectTimeout)
-                {
-                    OnInfo($"No Muse notifications for {MuseBluetoothConstants.NotificationStallReconnectTimeout.TotalSeconds:F0}s; reconnecting.");
-                    _connectionLost?.TrySetResult();
-                    continue;
-                }
-
-                if (keepAliveTimer.Elapsed >= TimeSpan.FromSeconds(5))
-                {
-                    keepAliveTimer.Restart();
-                    var summary = string.Join(", ", _notificationCounts.Select(pair => $"{ShortUuid(pair.Key)}={pair.Value}"));
-                    OnDiagnostic($"Heartbeat: status={_device?.ConnectionStatus}, notifications=[{summary}]");
-                    await SendControlCommandAsync("k", cancellationToken);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal caller-requested shutdown path.
-        }
-        finally
-        {
-            var connected = _device?.ConnectionStatus == BluetoothConnectionStatus.Connected;
-            OnDiagnostic(connected ? "Stopping stream..." : "Stream stopped; device is disconnected.");
-            if (connected)
-            {
-                await SendControlCommandAsync("h", CancellationToken.None);
-            }
         }
     }
 
@@ -303,17 +174,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         _connectionLost = null;
     }
 
-    private long TotalNotifications() => _notificationCounts.Values.Sum();
-
-    private static TimeSpan GetReconnectDelay(int attempt)
-    {
-        var multiplier = Math.Pow(2, Math.Max(0, Math.Min(attempt - 1, 4)));
-        var seconds = Math.Min(
-            MuseBluetoothConstants.AutoReconnectMaxDelay.TotalSeconds,
-            MuseBluetoothConstants.AutoReconnectInitialDelay.TotalSeconds * multiplier);
-        return TimeSpan.FromSeconds(seconds);
-    }
-
     private async Task<GattCharacteristic?> FindCharacteristicAsync(GattDeviceService service, Guid uuid, string name, bool optional = false)
     {
         var result = await service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode.Uncached);
@@ -341,25 +201,7 @@ public sealed class MuseBtClient : IAsyncDisposable
     {
         characteristic.ValueChanged += (_, args) =>
         {
-            var bytes = ReadBytes(args.CharacteristicValue);
-            var count = _notificationCounts.AddOrUpdate(characteristic.Uuid, 1, (_, value) => value + 1);
-
-            if (kind == MuseSensorKind.Eeg && MusePacketDecoder.TryDecodeEeg(bytes, out var packet))
-            {
-                var tracker = _eegBandTrackers.GetOrAdd(
-                    characteristic.Uuid,
-                    _ => new EegBandPowerTracker(
-                        name,
-                        MuseBluetoothConstants.DefaultBandWindowSamples,
-                        MuseBluetoothConstants.EegSampleRate,
-                        MuseBluetoothConstants.DefaultBandHopSamples));
-                tracker.AddSamples(packet.Samples);
-
-                var stats = _eegPacketStats.GetOrAdd(characteristic.Uuid, _ => new MuseEegPacketStats());
-                EegPacketDiagnostic?.Invoke(this, stats.Track(name, count, packet));
-            }
-
-            NotificationReceived?.Invoke(this, new MuseNotification(name, characteristic.Uuid, kind, bytes, count));
+            HandleNotification(characteristic.Uuid, name, kind, ReadBytes(args.CharacteristicValue));
         };
 
         var descriptorValue = characteristic.CharacteristicProperties.HasFlag(GattCharacteristicProperties.Notify)
@@ -370,35 +212,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         OnDiagnostic($"Subscribe {name}: {status}");
     }
 
-    private async Task StartClassicMuseStreamAsync(CancellationToken cancellationToken)
-    {
-        OnDiagnostic("Sending Muse classic start sequence: h, s, p21, d.");
-        await SendControlCommandAsync("h", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("s", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("p21", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("d", cancellationToken);
-    }
-
-    private void PublishBandSummaries()
-    {
-        foreach (var tracker in _eegBandTrackers.Values.OrderBy(tracker => tracker.Name))
-        {
-            if (tracker.TryCalculate(out var bands, out var diagnostic))
-            {
-                if (diagnostic is not null)
-                {
-                    BandPowerDiagnostic?.Invoke(this, diagnostic);
-                    OnDiagnostic(FormatBandPowerDiagnostic(diagnostic));
-                }
-
-                BandPowersCalculated?.Invoke(this, new MuseBandPowerReading(tracker.Name, bands));
-            }
-        }
-    }
-
     private static byte[] ReadBytes(IBuffer buffer)
     {
         using var reader = DataReader.FromBuffer(buffer);
@@ -407,32 +220,11 @@ public sealed class MuseBtClient : IAsyncDisposable
         return bytes;
     }
 
-    private static string ShortUuid(Guid uuid) => uuid.ToString()[4..8];
-
     private static string FormatProtocolError(byte? protocolError) => protocolError.HasValue ? $"0x{protocolError.Value:X2}" : "none";
 
-    private static string FormatBandPowerDiagnostic(MuseBandPowerDiagnostic diagnostic) =>
-        $"PSD {ShortSensorName(diagnostic.SensorName),-4} #{diagnostic.Count,5} " +
-        $"n={diagnostic.WindowSamples} hop={diagnostic.HopSamples} fs={diagnostic.SampleRate} notch={FormatNotch(diagnostic)} " +
-        $"uV[min={diagnostic.MinMicrovolts,7:F1}, max={diagnostic.MaxMicrovolts,7:F1}, mean={diagnostic.MeanMicrovolts,7:F2}, " +
-        $"meanAbs={diagnostic.MeanAbsMicrovolts,6:F1}, rms={diagnostic.RmsMicrovolts,6:F1}] " +
-        $"gamma[pow={diagnostic.GammaIntegratedPower:E3}, final={diagnostic.GammaLogPower,6:F3}, dB={diagnostic.GammaDb,6:F2}, " +
-        $"peak={diagnostic.GammaPeakHz,5:F1}Hz/{diagnostic.GammaPeakPower:E3}, spike={diagnostic.GammaSpikeLimit:E3}/x{diagnostic.GammaSpikeLimitMultiplier:F1}] " +
-        $"highPeak={diagnostic.HighPeakHz,5:F1}Hz/{diagnostic.HighPeakPower:E3} line50={diagnostic.Line50HzPower:E3} line60={diagnostic.Line60HzPower:E3}";
-
-    private static string FormatNotch(MuseBandPowerDiagnostic diagnostic) =>
-        diagnostic.NotchFrequencyHz > 0.0 ? $"{diagnostic.NotchFrequencyHz:F1}Hz/q{diagnostic.NotchQ:F1}" : "off";
-
-    private static string ShortSensorName(string name) => name.StartsWith("EEG ", StringComparison.OrdinalIgnoreCase) ? name[4..] : name;
-
-    private void OnDiagnostic(string message) => DiagnosticMessage?.Invoke(this, message);
-
-    private void OnInfo(string message) => InfoMessage?.Invoke(this, message);
 }
 #elif ANDROID
 using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Text;
 using Android.App;
 using Android.Bluetooth;
 using Android.Bluetooth.LE;
@@ -443,30 +235,15 @@ using Java.Util;
 namespace Muse.Core;
 
 #pragma warning disable CA1416, CA1422
-public sealed class MuseBtClient : IAsyncDisposable
+public sealed partial class MuseBtClient : IAsyncDisposable
 {
     private static readonly UUID ClientCharacteristicConfigurationUuid = UUID.FromString("00002902-0000-1000-8000-00805f9b34fb")!;
 
-    private readonly ConcurrentDictionary<Guid, long> _notificationCounts = new();
-    private readonly ConcurrentDictionary<Guid, EegBandPowerTracker> _eegBandTrackers = new();
-    private readonly ConcurrentDictionary<Guid, MuseEegPacketStats> _eegPacketStats = new();
     private BluetoothGatt? _gatt;
     private MuseGattCallback? _gattCallback;
     private BluetoothGattCharacteristic? _control;
-
-    public event EventHandler<string>? DiagnosticMessage;
-
-    public event EventHandler<string>? InfoMessage;
-
-    public event EventHandler<string>? ConnectionStatusChanged;
-
-    public event EventHandler<MuseNotification>? NotificationReceived;
-
-    public event EventHandler<MuseEegPacketDiagnostic>? EegPacketDiagnostic;
-
-    public event EventHandler<MuseBandPowerDiagnostic>? BandPowerDiagnostic;
-
-    public event EventHandler<MuseBandPowerReading>? BandPowersCalculated;
+    private Task DisconnectedTask => _gattCallback!.DisconnectedTask;
+    private bool IsConnected => _gatt is not null && _gattCallback is not null && !_gattCallback.DisconnectedTask.IsCompleted;
 
     public async Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
@@ -525,46 +302,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         {
             scanner.StopScan(callback);
             callback.Dispose();
-        }
-    }
-
-    public async Task ConnectAndStreamAsync(MuseDeviceAdvertisement discovered, CancellationToken cancellationToken = default)
-    {
-        var reconnectAttempt = 0;
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                if (reconnectAttempt > 0)
-                {
-                    OnDiagnostic($"Reconnect attempt {reconnectAttempt} to {discovered.DisplayName}...");
-                }
-
-                await ConnectAndStreamOnceAsync(discovered, cancellationToken);
-            }
-            catch (System.OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException)
-            {
-                OnInfo($"Muse BT stream failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-            }
-            finally
-            {
-                await CleanupConnectionAsync(sendStopCommand: false);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-
-            reconnectAttempt++;
-            var delay = GetReconnectDelay(reconnectAttempt);
-            ConnectionStatusChanged?.Invoke(this, "Reconnecting");
-            OnDiagnostic($"Reconnecting to {discovered.DisplayName} in {delay.TotalSeconds:F1}s...");
-            await Task.Delay(delay, cancellationToken);
         }
     }
 
@@ -647,15 +384,7 @@ public sealed class MuseBtClient : IAsyncDisposable
             return;
         }
 
-        var bytes = Encoding.ASCII.GetBytes(command + "\n");
-        if (bytes.Length > byte.MaxValue)
-        {
-            throw new InvalidOperationException($"Control command too long: {command}");
-        }
-
-        var payload = new byte[bytes.Length + 1];
-        payload[0] = (byte)bytes.Length;
-        bytes.CopyTo(payload, 1);
+        var payload = EncodeControlCommand(command);
 
         _control.WriteType = _control.Properties.HasFlag(GattProperty.Write)
             ? GattWriteType.Default
@@ -671,65 +400,6 @@ public sealed class MuseBtClient : IAsyncDisposable
 
         var status = await writeCompletion.WaitAsync(cancellationToken);
         OnDiagnostic($"Control write '{command}' ({_control.WriteType}): {status}");
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        await CleanupConnectionAsync(sendStopCommand: true);
-    }
-
-    private async Task RunStreamingLoopAsync(CancellationToken cancellationToken)
-    {
-        OnDiagnostic("Streaming.");
-        try
-        {
-            var keepAliveTimer = Stopwatch.StartNew();
-            var lastNotificationTotal = TotalNotifications();
-            var lastNotificationProgress = DateTimeOffset.UtcNow;
-            var disconnectedTask = _gattCallback?.DisconnectedTask ?? Task.Delay(Timeout.InfiniteTimeSpan);
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var delayTask = Task.Delay(MuseBluetoothConstants.BandPowerPublishInterval, cancellationToken);
-                if (await Task.WhenAny(delayTask, disconnectedTask) == disconnectedTask)
-                {
-                    OnDiagnostic("Connection lost; leaving stream loop for reconnect.");
-                    break;
-                }
-
-                await delayTask;
-                PublishBandSummaries();
-
-                var notificationTotal = TotalNotifications();
-                if (notificationTotal > lastNotificationTotal)
-                {
-                    lastNotificationTotal = notificationTotal;
-                    lastNotificationProgress = DateTimeOffset.UtcNow;
-                }
-                else if (DateTimeOffset.UtcNow - lastNotificationProgress >= MuseBluetoothConstants.NotificationStallReconnectTimeout)
-                {
-                    OnInfo($"No Muse notifications for {MuseBluetoothConstants.NotificationStallReconnectTimeout.TotalSeconds:F0}s; reconnecting.");
-                    _gattCallback?.SignalReconnectRequested();
-                    continue;
-                }
-
-                if (keepAliveTimer.Elapsed >= TimeSpan.FromSeconds(5))
-                {
-                    keepAliveTimer.Restart();
-                    var summary = string.Join(", ", _notificationCounts.Select(pair => $"{ShortUuid(pair.Key)}={pair.Value}"));
-                    OnDiagnostic($"Heartbeat: notifications=[{summary}]");
-                    await SendControlCommandAsync("k", cancellationToken);
-                }
-            }
-        }
-        catch (System.OperationCanceledException)
-        {
-            // Normal caller-requested shutdown path.
-        }
-        finally
-        {
-            OnDiagnostic("Stopping stream...");
-            await SendControlCommandAsync("h", CancellationToken.None);
-        }
     }
 
     private async Task CleanupConnectionAsync(bool sendStopCommand)
@@ -753,17 +423,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         _gatt = null;
         _gattCallback?.Dispose();
         _gattCallback = null;
-    }
-
-    private long TotalNotifications() => _notificationCounts.Values.Sum();
-
-    private static TimeSpan GetReconnectDelay(int attempt)
-    {
-        var multiplier = Math.Pow(2, Math.Max(0, Math.Min(attempt - 1, 4)));
-        var seconds = Math.Min(
-            MuseBluetoothConstants.AutoReconnectMaxDelay.TotalSeconds,
-            MuseBluetoothConstants.AutoReconnectInitialDelay.TotalSeconds * multiplier);
-        return TimeSpan.FromSeconds(seconds);
     }
 
     private BluetoothGattCharacteristic? FindCharacteristic(BluetoothGattService service, Guid uuid, string name, bool optional = false)
@@ -825,61 +484,10 @@ public sealed class MuseBtClient : IAsyncDisposable
         OnDiagnostic($"Subscribe {name}: {status}");
     }
 
-    private async Task StartClassicMuseStreamAsync(CancellationToken cancellationToken)
-    {
-        OnDiagnostic("Sending Muse classic start sequence: h, s, p21, d.");
-        await SendControlCommandAsync("h", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("s", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("p21", cancellationToken);
-        await Task.Delay(200, cancellationToken);
-        await SendControlCommandAsync("d", cancellationToken);
-    }
-
     private void HandleCharacteristicChanged(BluetoothGattCharacteristic characteristic, byte[] bytes)
     {
-        if (_gattCallback is null || !_gattCallback.TryGetCharacteristicInfo(characteristic.Uuid!, out var info))
-        {
-            return;
-        }
-
-        var uuid = FromJavaUuid(characteristic.Uuid!);
-        var count = _notificationCounts.AddOrUpdate(uuid, 1, (_, value) => value + 1);
-
-        if (info.Kind == MuseSensorKind.Eeg && MusePacketDecoder.TryDecodeEeg(bytes, out var packet))
-        {
-            var tracker = _eegBandTrackers.GetOrAdd(
-                uuid,
-                _ => new EegBandPowerTracker(
-                    info.Name,
-                    MuseBluetoothConstants.DefaultBandWindowSamples,
-                    MuseBluetoothConstants.EegSampleRate,
-                    MuseBluetoothConstants.DefaultBandHopSamples));
-            tracker.AddSamples(packet.Samples);
-
-            var stats = _eegPacketStats.GetOrAdd(uuid, _ => new MuseEegPacketStats());
-            EegPacketDiagnostic?.Invoke(this, stats.Track(info.Name, count, packet));
-        }
-
-        NotificationReceived?.Invoke(this, new MuseNotification(info.Name, uuid, info.Kind, bytes, count));
-    }
-
-    private void PublishBandSummaries()
-    {
-        foreach (var tracker in _eegBandTrackers.Values.OrderBy(tracker => tracker.Name))
-        {
-            if (tracker.TryCalculate(out var bands, out var diagnostic))
-            {
-                if (diagnostic is not null)
-                {
-                    BandPowerDiagnostic?.Invoke(this, diagnostic);
-                    OnDiagnostic(FormatBandPowerDiagnostic(diagnostic));
-                }
-
-                BandPowersCalculated?.Invoke(this, new MuseBandPowerReading(tracker.Name, bands));
-            }
-        }
+        if (_gattCallback is not null && _gattCallback.TryGetCharacteristicInfo(characteristic.Uuid!, out var info))
+            HandleNotification(FromJavaUuid(characteristic.Uuid!), info.Name, info.Kind, bytes);
     }
 
     private static BluetoothAdapter? GetBluetoothAdapter()
@@ -907,26 +515,6 @@ public sealed class MuseBtClient : IAsyncDisposable
         var hex = address.ToString("X12");
         return string.Join(":", Enumerable.Range(0, 6).Select(i => hex.Substring(i * 2, 2)));
     }
-
-    private static string ShortUuid(Guid uuid) => uuid.ToString()[4..8];
-
-    private static string FormatBandPowerDiagnostic(MuseBandPowerDiagnostic diagnostic) =>
-        $"PSD {ShortSensorName(diagnostic.SensorName),-4} #{diagnostic.Count,5} " +
-        $"n={diagnostic.WindowSamples} hop={diagnostic.HopSamples} fs={diagnostic.SampleRate} notch={FormatNotch(diagnostic)} " +
-        $"uV[min={diagnostic.MinMicrovolts,7:F1}, max={diagnostic.MaxMicrovolts,7:F1}, mean={diagnostic.MeanMicrovolts,7:F2}, " +
-        $"meanAbs={diagnostic.MeanAbsMicrovolts,6:F1}, rms={diagnostic.RmsMicrovolts,6:F1}] " +
-        $"gamma[pow={diagnostic.GammaIntegratedPower:E3}, final={diagnostic.GammaLogPower,6:F3}, dB={diagnostic.GammaDb,6:F2}, " +
-        $"peak={diagnostic.GammaPeakHz,5:F1}Hz/{diagnostic.GammaPeakPower:E3}, spike={diagnostic.GammaSpikeLimit:E3}/x{diagnostic.GammaSpikeLimitMultiplier:F1}] " +
-        $"highPeak={diagnostic.HighPeakHz,5:F1}Hz/{diagnostic.HighPeakPower:E3} line50={diagnostic.Line50HzPower:E3} line60={diagnostic.Line60HzPower:E3}";
-
-    private static string FormatNotch(MuseBandPowerDiagnostic diagnostic) =>
-        diagnostic.NotchFrequencyHz > 0.0 ? $"{diagnostic.NotchFrequencyHz:F1}Hz/q{diagnostic.NotchQ:F1}" : "off";
-
-    private static string ShortSensorName(string name) => name.StartsWith("EEG ", StringComparison.OrdinalIgnoreCase) ? name[4..] : name;
-
-    private void OnDiagnostic(string message) => DiagnosticMessage?.Invoke(this, message);
-
-    private void OnInfo(string message) => InfoMessage?.Invoke(this, message);
 
     private sealed class MuseScanCallback : ScanCallback
     {
@@ -1082,7 +670,7 @@ public sealed class MuseBtClient : IAsyncDisposable
     private readonly record struct CharacteristicInfo(string Name, MuseSensorKind Kind);
 }
 #pragma warning restore CA1416, CA1422
-#else
+#elif !IOS && !MACCATALYST && !MUSE_PROTOCOL_TESTS
 namespace Muse.Core;
 
 #pragma warning disable CS0067
@@ -1105,7 +693,7 @@ public sealed class MuseBtClient : IAsyncDisposable
 	public Task<MuseDeviceAdvertisement?> FindMuseAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
 	{
 		_ = timeout;
-		InfoMessage?.Invoke(this, "Muse Bluetooth is currently implemented for Windows and Android only.");
+		InfoMessage?.Invoke(this, "Muse Bluetooth is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
 		return Task.FromResult<MuseDeviceAdvertisement?>(null);
 	}
 
@@ -1113,7 +701,7 @@ public sealed class MuseBtClient : IAsyncDisposable
 	{
 		_ = discovered;
 		_ = cancellationToken;
-		InfoMessage?.Invoke(this, "Muse Bluetooth streaming is currently implemented for Windows and Android only.");
+		InfoMessage?.Invoke(this, "Muse Bluetooth streaming is currently implemented for Windows, Android, iOS and Mac Catalyst only.");
 		return Task.CompletedTask;
 	}
 
