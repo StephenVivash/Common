@@ -89,4 +89,6 @@
 	  </Compile>
 	</ItemGroup>
 
+	<Import Project="Build/AppleAotCache.targets" />
+
 </Project>

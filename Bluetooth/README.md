@@ -72,8 +72,26 @@ different `System.Private.CoreLib` module GUID from the one in the app bundle.
 A clean rebuild of the app and its references regenerated the cached AOT code
 and restored startup and live battery reads. The graph page also rendered.
 
-If the same dependency-GUID mismatch recurs after changing code, dependencies,
-or the Apple/.NET toolchain, rebuild the affected Release target:
+On 2026-10-24 the same failure recurred after further development. WattCycleApp
+now imports `Build/AppleAotCache.targets`, which extends the 26.5 SDK's AOT cache
+key with the paths and SHA256 hashes of all its managed AOT assembly inputs.
+Changed dependencies invalidate the native AOT output, even when a dependent
+library's own DLL is unchanged or file timestamps are preserved. Unchanged
+builds keep using the cache. This applies only to Mac Catalyst Release builds;
+the existing AOT, trimming, and symbol stripping settings are retained.
+
+The next normal Release build repairs existing stale outputs automatically.
+Builds with changed assemblies can take longer because the complete AOT output
+must be regenerated. The target uses Apple SDK build hooks, so verify it again
+when upgrading that SDK. Its offline regression checks require Python 3 and
+the .NET SDK, but no Apple SDK or Bluetooth hardware:
+
+```sh
+python3 WattCycleApp/Build/check_aot_cache.py
+```
+
+If an SDK upgrade introduces a different cache problem, the manual clean-build
+recovery is still available:
 
 ```sh
 dotnet build WattCycleApp/WattCycleApp.csproj -t:Rebuild -c Release \
@@ -81,6 +99,5 @@ dotnet build WattCycleApp/WattCycleApp.csproj -t:Rebuild -c Release \
   -p:RuntimeIdentifier=maccatalyst-arm64
 ```
 
-This recovery retains the existing Release AOT, trimming, and symbol stripping
-settings. A successful build alone does not verify startup; launch the resulting
-Release app and check both the battery and graph pages.
+A successful build alone does not verify startup; launch the resulting Release
+app and check both the battery and graph pages.

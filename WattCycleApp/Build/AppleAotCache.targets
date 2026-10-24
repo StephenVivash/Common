@@ -1,0 +1,21 @@
+<Project>
+  <!-- The 26.5 Apple SDK's AOT cache tracks compiler options but not assembly
+       contents. An unchanged library can retain native code referencing an old
+       dependency MVID after trimming changes that dependency (e.g. CoreLib).
+       Extend the SDK cache key, letting its normal cleanup invalidate the whole
+       AOT output only when the managed input set or its contents changes. -->
+  <Target Name="FingerprintWattCycleAotAssemblies"
+          BeforeTargets="_GenerateAOTCompileDependencyCache"
+          Condition="'$(Configuration)' == 'Release' And
+                     $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst' And
+                     '$(_RunAotCompiler)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+    <Error Condition="'@(_AssembliesToAOT)' == ''"
+           Text="Cannot fingerprint the Apple AOT cache: the SDK did not provide its assembly inputs." />
+    <GetFileHash Files="@(_AssembliesToAOT->Distinct())" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_WattCycleAotAssemblyHashes" />
+    </GetFileHash>
+    <ItemGroup>
+      <_AOTCompileCache Include="@(_WattCycleAotAssemblyHashes->'%(FullPath)=%(FileHash)')" />
+    </ItemGroup>
+  </Target>
+</Project>
