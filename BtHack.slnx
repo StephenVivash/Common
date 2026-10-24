@@ -5,6 +5,7 @@
     <Project Path="Muse.Tests/Muse.ProtocolChecks.csproj" />
   </Folder>
   <Project Path="Bluetooth/Bluetooth.csproj" />
+  <Project Path="Common/Common.csproj" />
   <Project Path="Gui/Gui.csproj" />
   <Project Path="Muse/Muse.csproj" />
   <Project Path="WattCycle/WattCycle.csproj" />
