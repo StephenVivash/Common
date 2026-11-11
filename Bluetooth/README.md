@@ -49,7 +49,7 @@ These exercise captured packets, fragmented replies, both protocols, learned
 TDT headers, native failures/cancellation, explicit rejection, missing MOS ACKs
 with readback, cleanup, and stable Apple identifiers.
 
-Build each application for `net10.0-maccatalyst` and `net10.0-ios`. For simulator
+Build each application for `net11.0-maccatalyst` and `net11.0-ios`. For simulator
 builds use `iossimulator-arm64`; physical iOS devices require normal signing.
 An iOS simulator build checks compilation/packaging but cannot validate BLE.
 
@@ -95,7 +95,7 @@ recovery is still available:
 
 ```sh
 dotnet build WattCycleApp/WattCycleApp.csproj -t:Rebuild -c Release \
-  -f net10.0-maccatalyst -p:TargetFrameworks=net10.0-maccatalyst \
+  -f net11.0-maccatalyst -p:TargetFrameworks=net11.0-maccatalyst \
   -p:RuntimeIdentifier=maccatalyst-arm64
 ```
 

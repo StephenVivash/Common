@@ -213,4 +213,4 @@ and inspecting the new polling logs if failures accumulate again.
 Both final Windows and Android app builds pass with existing ToolBar nullability
 warnings. The signed Android APK embeds the updated app and library assemblies
 and is located at
-`C:\Src\Common\WattCycleApp\bin\Debug\net10.0-android\com.companyname.wattcycleapp-Signed.apk`.
+`C:\Src\Common\WattCycleApp\bin\Debug\net11.0-android\com.companyname.wattcycleapp-Signed.apk`.

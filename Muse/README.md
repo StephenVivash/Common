@@ -48,9 +48,9 @@ From Yijing, build the Apple applications using each referenced project's normal
 targets (do not override `TargetFrameworks` globally):
 
 ```sh
-dotnet build Yijing.maui/Yijing.maui.csproj -t:Rebuild -f net10.0-maccatalyst \
+dotnet build Yijing.maui/Yijing.maui.csproj -t:Rebuild -f net11.0-maccatalyst \
   -p:RuntimeIdentifier=maccatalyst-arm64
-dotnet build Yijing.maui/Yijing.maui.csproj -t:Rebuild -f net10.0-ios \
+dotnet build Yijing.maui/Yijing.maui.csproj -t:Rebuild -f net11.0-ios \
   -p:RuntimeIdentifier=iossimulator-arm64
 ```
 

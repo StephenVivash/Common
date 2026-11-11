@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix="wattcycle-aot-") as directory:
     properties = ET.SubElement(project, "PropertyGroup")
     for key, value in {
         "Configuration": "Release",
-        "TargetFramework": "net10.0-maccatalyst",
+        "TargetFramework": "net11.0-maccatalyst",
         "_RunAotCompiler": "true",
     }.items():
         ET.SubElement(properties, key).text = value
@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory(prefix="wattcycle-aot-") as directory:
     updated = inputs()
     assert updated != original, "Changed dependency with preserved mtime reused cache"
     assert updated[0] == original[0], "Unchanged library fingerprint changed"
-    for option in ("-p:Configuration=Debug", "-p:TargetFramework=net10.0-ios",
+    for option in ("-p:Configuration=Debug", "-p:TargetFramework=net11.0-ios",
                    "-p:_RunAotCompiler=false", "-p:DesignTimeBuild=true"):
         assert inputs(option) == [], f"Cache workaround unexpectedly enabled: {option}"
     dependency.unlink()
