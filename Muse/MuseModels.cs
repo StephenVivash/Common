@@ -11,6 +11,15 @@ public enum MuseSensorKind
 
 public sealed record MuseDeviceAdvertisement(ulong BluetoothAddress, string Name, short Rssi, bool ServiceAdvertised)
 {
+    // Apple exposes a peripheral UUID rather than a MAC address. BluetoothAddress
+    // is unused (zero) for Apple advertisements; always connect using this UUID.
+    public Guid? PeripheralIdentifier { get; init; }
+
+    public string DeviceIdentifier => PeripheralIdentifier?.ToString() ?? $"0x{BluetoothAddress:X}";
+
+    public static MuseDeviceAdvertisement FromPeripheral(Guid identifier, string name, short rssi, bool serviceAdvertised) =>
+        new(0, name, rssi, serviceAdvertised) { PeripheralIdentifier = identifier };
+
 	public string DisplayName => string.IsNullOrWhiteSpace(Name) ? "Muse headset" : Name;
 }
 

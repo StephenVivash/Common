@@ -13,6 +13,7 @@
 		<!-- For example: <RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers> -->
 
 		<EnableWindowsTargeting>true</EnableWindowsTargeting>
+		<CodesignEntitlements Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">Platforms/MacCatalyst/Entitlements.plist</CodesignEntitlements>
 
 		<OutputType>Exe</OutputType>
 		<RootNamespace>WattCycleApp</RootNamespace>
@@ -71,7 +72,7 @@
 	<ItemGroup>
 		<PackageReference Include="CommunityToolkit.Maui" Version="15.0.1" />
 		<PackageReference Include="LiveChartsCore.SkiaSharpView.Maui" Version="2.0.5" />
-		<PackageReference Include="Microsoft.Maui.Controls" Version="10.0.110" />
+		<PackageReference Include="Microsoft.Maui.Controls" Version="10.0.120" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Maui.Controls.Compatibility" Version="10.0.110" />
 		<PackageReference Include="SkiaSharp.Views.Maui.Controls" Version="3.119.4" />
@@ -87,5 +88,7 @@
 	    <DependentUpon>BatteryPage.xaml</DependentUpon>
 	  </Compile>
 	</ItemGroup>
+
+	<Import Project="Build/AppleAotCache.targets" />
 
 </Project>
