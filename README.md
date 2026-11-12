@@ -2,16 +2,13 @@
 
 ## .NET 11 development setup
 
-`global.json` selects the .NET 11.0.1xx SDK and workload set 11.0.100. Install
-the **SDK**, not just the runtime. MAUI workloads must be installed using that
-same SDK installation; workloads installed under a .NET 10 SDK do not satisfy
-the .NET 11 projects.
-
-From the repository directory:
+`global.json` selects the .NET 11.0.1xx SDK. Use MAUI workloads installed for
+that SDK. On Windows, use the .NET 11 MAUI workloads installed by Visual
+Studio. On macOS, restore workload set 11.0.100 from the repository directory:
 
 ```sh
 dotnet --version
-dotnet workload restore BtHack.slnx
+dotnet workload restore BtHack.slnx --version 11.0.100
 ```
 
 On macOS, the Apple SDKs in this workload set require Xcode 27.2. The Mac
